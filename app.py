@@ -71,24 +71,52 @@ def provider_info():
 
 @app.post("/api/image-upload")
 async def image_upload(req: ImageUploadRequest):
+    """Accept supported browser image data URIs and normalize the file type safely.
+
+    Some mobile browsers/file pickers can report an unusual MIME label even when the
+    underlying bytes are a normal JPEG/PNG/WEBP. We therefore verify the actual file
+    signature after decoding instead of trusting the MIME label alone.
+    """
     if not req.data_uri.startswith("data:image/") or ";base64," not in req.data_uri:
         raise HTTPException(status_code=400, detail="Expected a base64 image data URI.")
+
     header, encoded = req.data_uri.split(",", 1)
-    mime = header.split(";", 1)[0][5:].lower()
-    ext = {"jpeg":"jpg", "jpg":"jpg", "png":"png", "webp":"webp"}.get(mime)
-    if not ext:
-        raise HTTPException(status_code=400, detail="Only PNG, JPEG and WEBP images are supported.")
+    declared_mime = header.split(";", 1)[0][5:].lower().strip()
+    logger.info("Image upload received: declared_mime=%s encoded_chars=%s", declared_mime, len(encoded))
+
     try:
         raw = base64.b64decode(encoded, validate=True)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid base64 image.")
+
     if len(raw) > 7 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="Image is too large.")
+    if not raw:
+        raise HTTPException(status_code=400, detail="Image data is empty.")
+
+    # Detect the real file type from magic bytes. This handles mobile/browser MIME
+    # mismatches such as image/jpg or image/pjpeg without weakening the file-type rule.
+    if raw.startswith(b"\xff\xd8\xff"):
+        detected_mime, ext = "image/jpeg", "jpg"
+    elif raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        detected_mime, ext = "image/png", "png"
+    elif len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        detected_mime, ext = "image/webp", "webp"
+    else:
+        logger.warning("Image upload rejected: unsupported bytes declared_mime=%s", declared_mime)
+        raise HTTPException(status_code=400, detail="Only PNG, JPEG and WEBP images are supported.")
+
+    logger.info("Image upload accepted: declared_mime=%s detected_mime=%s bytes=%s", declared_mime, detected_mime, len(raw))
     name = f"{uuid.uuid4().hex}.{ext}"
     path = TEMP_DIR / name
     path.write_bytes(raw)
     # This public URL is fetched by Pixazo immediately after this request.
-    return {"ok": True, "image_url": f"https://nene-ai.onrender.com/api/temp-images/{name}"}
+    return {
+        "ok": True,
+        "image_url": f"https://nene-ai.onrender.com/api/temp-images/{name}",
+        "mime_type": detected_mime,
+        "extension": ext,
+    }
 
 @app.get("/api/temp-images/{name}")
 async def temp_image(name: str):
