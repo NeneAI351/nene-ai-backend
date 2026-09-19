@@ -138,7 +138,12 @@ async def pixazo_generate(req: GenerateRequest, kind: str):
         image = req.image_url or req.image_uri
         if not image or not image.startswith("http"):
             raise HTTPException(status_code=400, detail="Image-to-video requires a public image URL.")
-        payload = {"prompt": req.prompt, "image_url": image}
+                payload = {
+            "prompt": f"Preserve the exact identity and appearance of the person in the source image. Keep the same face, facial features, hair, skin tone, clothing, body proportions, and overall appearance. Animate only the requested movement and camera motion. {req.prompt}".strip(),
+            "image_url": image,
+            "strength": 1.0,
+            "negative": "different person, changed identity, different face, face morphing, identity drift, different hair, different skin tone, different clothing, age change, facial redesign, replacement character",
+        }
     payload["duration"] = duration_value(req.duration)
     payload["resolution"] = resolution_value(req.resolution)
     async with httpx.AsyncClient(timeout=90) as client:
