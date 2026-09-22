@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.5.0")
+app = FastAPI(title="NENE AI Backend", version="0.6.0-quality-test")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
@@ -138,14 +138,59 @@ async def pixazo_generate(req: GenerateRequest, kind: str):
         image = req.image_url or req.image_uri
         if not image or not image.startswith("http"):
             raise HTTPException(status_code=400, detail="Image-to-video requires a public image URL.")
-   payload = {
-       "prompt": f"Preserve the exact identity and appearance of the person in the source image. Keep the same face, facial features, hair, skin tone, clothing, body proportions, and overall appearance. Animate only the requested movement and camera motion. {req.prompt}".strip(),
-            "image_url": image,
-            "strength": 1.0,
-            "negative": "different person, changed identity, different face, face morphing, identity drift, different hair, different skin tone, different clothing, age change, facial redesign, replacement character",
-        }
-    payload["duration"] = duration_value(req.duration)
-    payload["resolution"] = resolution_value(req.resolution)
+        # Keep the user's request, but add a short, deterministic identity guard.
+        # This does not replace the user's motion instruction; it tells the model
+        # what must remain unchanged while that motion is applied.
+        identity_guard = (
+            "Preserve the exact identity and appearance of the person in the source image. "
+            "Keep the same face, facial features, hair, skin tone, clothing, body proportions, "
+            "and overall appearance. Apply only the requested motion. "
+            f"User motion instruction: {req.prompt.strip()}"
+        )
+        payload = {"prompt": identity_guard, "image_url": image}
+    # The current Pixazo LTX 2.5 FREE endpoint does not use the Pro/Lite
+    # duration/resolution fields. It exposes quality-relevant controls such as
+    # strength, negative, aspect, frame_rate, steps and cfg instead.
+    # Keep the existing frontend contract, but translate it safely here.
+    if kind == "image-to-video":
+        payload["strength"] = 1.0
+        payload["negative"] = (
+            "blurry, soft focus, low detail, low quality, distorted, worst quality, "
+            "jpeg artifacts, compression artifacts, camera shake, shaky camera, jitter, "
+            "judder, flicker, unstable motion, temporal flicker, motion smear, excessive motion blur, "
+            "face distortion, identity drift, different person, changed facial features, "
+            "warped face, deformed hands, warped body, duplicated features, unnatural movement"
+        )
+        # Fixed seed for this controlled quality experiment so we can compare
+        # changes without introducing an additional random variable. This should
+        # be removed/randomized for normal production generations later.
+        payload["seed"] = 42
+
+    # Preserve the user's requested shape while staying within the free API's
+    # supported pixel budget. The existing 1080p UI maps to 1920x1080 and the
+    # existing 720p option maps to 1280x704 (the documented free endpoint default).
+    requested = (req.resolution or "").lower()
+    if "3840" in requested or "2160" in requested:
+        width, height = 1920, 1080
+    elif "1280" in requested or "720" in requested:
+        width, height = 1280, 704
+    else:
+        width, height = 1920, 1080
+
+    aspect = (req.aspect_ratio or "").strip()
+    if aspect in {"16:9", "9:16", "1:1", "21:9", "4:3", "3:4", "3:2", "2:3", "4:5"}:
+        payload["aspect"] = aspect
+    else:
+        payload["width"] = width
+        payload["height"] = height
+
+    # Keep 24 fps so we do not confuse playback smoothness with generation
+    # quality. Use a modest step increase for this controlled test; Pixazo
+    # documents 8 as the tuned default and notes that higher values are slower
+    # with diminishing returns, so we deliberately test only 12 here.
+    payload["frame_rate"] = 24
+    payload["steps"] = 12
+    payload["cfg"] = 3.0
     async with httpx.AsyncClient(timeout=90) as client:
         try: r = await client.post(endpoint, headers=pixazo_headers(), json=payload)
         except httpx.HTTPError as exc: raise HTTPException(status_code=502, detail=f"Pixazo connection error: {exc}")
