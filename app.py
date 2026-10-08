@@ -1,4 +1,6 @@
 import os
+import asyncio
+import json
 import base64
 import uuid
 import mimetypes
@@ -13,7 +15,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -33,6 +35,23 @@ TEMP_DIR = Path("/tmp/nene_images")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 STORY_VIDEO_DIR = Path("/tmp/nene_story_videos")
 STORY_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+
+# Prototype-safe idempotency registry. Production will move this to a shared
+# database/Redis layer so it survives restarts and multiple backend instances.
+GENERATION_IDEMPOTENCY = {}
+GENERATION_IDEMPOTENCY_LOCK = asyncio.Lock()
+GENERATION_IDEMPOTENCY_MAX = 1000
+
+def _trim_idempotency_registry():
+    if len(GENERATION_IDEMPOTENCY) <= GENERATION_IDEMPOTENCY_MAX:
+        return
+    items = sorted(
+        GENERATION_IDEMPOTENCY.items(),
+        key=lambda item: item[1].get("created_at", 0),
+        reverse=True,
+    )[:GENERATION_IDEMPOTENCY_MAX]
+    GENERATION_IDEMPOTENCY.clear()
+    GENERATION_IDEMPOTENCY.update(items)
 
 class GenerateRequest(BaseModel):
     type: str = Field(default="text-to-video")
@@ -530,12 +549,8 @@ async def story_video(name: str):
         raise HTTPException(status_code=404, detail="Story video not found. Prototype storage is temporary.")
     return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "public, max-age=3600"})
 
-@app.post("/api/generate")
-async def generate(req: GenerateRequest):
-    kind = req.type.lower().strip()
-    if kind not in {"text-to-video", "image-to-video"}:
-        raise HTTPException(status_code=400, detail="Supported types: text-to-video, image-to-video")
 
+async def _generate_uncached(req: GenerateRequest, kind: str):
     requested = (req.provider or "auto").lower().strip()
     if requested in {"pixazo", "pixazo-ltx"}:
         return await pixazo_generate(req, kind)
@@ -554,29 +569,13 @@ async def generate(req: GenerateRequest):
             if exc.status_code < 500 and "card_required" not in detail.lower():
                 raise
             if "card_required" in detail.lower() and MAGIC_HOUR_API_KEY:
-                # Pixazo rejected before accepting a job, so it is safe to fall back.
-                # If the user chose Auto and the request was 720p/1080p, use Magic
-                # Hour's free 480p tier rather than creating a second failure because
-                # the free Magic Hour tier does not support the higher resolutions.
-                logger.warning(
-                    "Pixazo rejected Auto request because this account requires a card; "
-                    "falling back to Magic Hour at a free-compatible resolution."
-                )
+                logger.warning("Pixazo rejected Auto request because this account requires a card; falling back to Magic Hour.")
                 fallback_req = GenerateRequest(
-                    type=req.type,
-                    prompt=req.prompt,
-                    model=req.model,
-                    resolution="480p",
-                    # Auto's Magic Hour fallback is deliberately limited to the
-                    # free-compatible 3-second clip. This avoids asking the free tier
-                    # for the frontend's LTX-oriented 6-second minimum.
-                    duration=3,
-                    aspect_ratio=req.aspect_ratio,
-                    camera_motion=req.camera_motion,
-                    image_url=req.image_url,
-                    image_uri=req.image_uri,
-                    audio_url=req.audio_url,
-                    provider="magic-hour",
+                    type=req.type, prompt=req.prompt, model=req.model,
+                    resolution="480p", duration=3,
+                    aspect_ratio=req.aspect_ratio, camera_motion=req.camera_motion,
+                    image_url=req.image_url, image_uri=req.image_uri,
+                    audio_url=req.audio_url, provider="magic-hour",
                 )
                 return await magic_hour_generate(fallback_req, kind)
             raise
@@ -585,6 +584,55 @@ async def generate(req: GenerateRequest):
     if LTX_API_KEY:
         return await ltx_generate(req, kind)
     raise HTTPException(status_code=503, detail="No video provider is configured.")
+
+
+@app.post("/api/generate")
+async def generate(req: GenerateRequest, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
+    kind = req.type.lower().strip()
+    if kind not in {"text-to-video", "image-to-video"}:
+        raise HTTPException(status_code=400, detail="Supported types: text-to-video, image-to-video")
+
+    key = (idempotency_key or "").strip()
+    if not key:
+        return await _generate_uncached(req, kind)
+    if len(key) > 200:
+        raise HTTPException(status_code=400, detail="Idempotency-Key is too long.")
+
+    request_fingerprint = json.dumps(req.model_dump(), sort_keys=True, default=str)
+
+    async with GENERATION_IDEMPOTENCY_LOCK:
+        existing = GENERATION_IDEMPOTENCY.get(key)
+        if existing:
+            if existing.get("fingerprint") != request_fingerprint:
+                raise HTTPException(status_code=409, detail="This Idempotency-Key was already used for a different generation request.")
+            task = existing.get("task")
+            if task is None:
+                return existing["response"]
+        else:
+            task = asyncio.create_task(_generate_uncached(req, kind))
+            GENERATION_IDEMPOTENCY[key] = {
+                "fingerprint": request_fingerprint,
+                "task": task,
+                "created_at": asyncio.get_running_loop().time(),
+            }
+            _trim_idempotency_registry()
+
+    try:
+        response = await task
+    except Exception:
+        async with GENERATION_IDEMPOTENCY_LOCK:
+            current = GENERATION_IDEMPOTENCY.get(key)
+            if current and current.get("task") is task:
+                GENERATION_IDEMPOTENCY.pop(key, None)
+        raise
+
+    async with GENERATION_IDEMPOTENCY_LOCK:
+        current = GENERATION_IDEMPOTENCY.get(key)
+        if current and current.get("task") is task:
+            current["response"] = response
+            current["task"] = None
+            current["created_at"] = asyncio.get_running_loop().time()
+    return response
 
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
