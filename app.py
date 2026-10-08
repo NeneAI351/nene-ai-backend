@@ -391,10 +391,14 @@ async def job(job_id: str, mode: str="text-to-video", provider: str=""):
         data["_nene_status"] = status
         if status in {"complete", "completed"} and downloads:
             first = downloads[0]
-            if isinstance(first, dict) and first.get("url"):
-                data["_nene_video_url"] = first["url"]
+            video_url = None
+            if isinstance(first, dict):
+                video_url = first.get("url")
             elif isinstance(first, str):
-                data["_nene_video_url"] = first
+                video_url = first
+            if video_url:
+                data["_nene_video_url"] = video_url
+                data["video_url"] = video_url
         return data
 
 @app.get("/api/jobs/{job_id}")
