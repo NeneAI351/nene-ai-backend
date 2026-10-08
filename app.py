@@ -363,7 +363,16 @@ async def generate(req: GenerateRequest):
         raise HTTPException(status_code=400, detail="Unknown provider. Use auto, pixazo, magic-hour, or ltx.")
 
     if PIXAZO_API_KEY:
-        return await pixazo_generate(req, kind)
+        try:
+            return await pixazo_generate(req, kind)
+        except HTTPException as exc:
+            detail = str(exc.detail or "")
+            if exc.status_code < 500 and "card_required" not in detail.lower():
+                raise
+            if "card_required" in detail.lower() and MAGIC_HOUR_API_KEY:
+                logger.warning("Pixazo rejected Auto request because this account requires a card; falling back to Magic Hour before any job was accepted.")
+                return await magic_hour_generate(req, kind)
+            raise
     if MAGIC_HOUR_API_KEY:
         return await magic_hour_generate(req, kind)
     if LTX_API_KEY:
@@ -442,4 +451,11 @@ async def job(job_id: str, mode: str="text-to-video", provider: str=""):
         try: r=await client.get(endpoint, headers={"Authorization":f"Bearer {LTX_API_KEY}"})
         except httpx.HTTPError as exc: raise HTTPException(status_code=502, detail=f"LTX connection error: {exc}")
     if r.status_code>=400: raise HTTPException(status_code=r.status_code, detail=r.text)
-    return r.json()
+    data=r.json()
+    status=str(data.get("status") or "").lower()
+    data["_nene_status"]=status
+    result=data.get("result") or {}
+    if isinstance(result,dict) and result.get("video_url"):
+        data["_nene_video_url"]=result.get("video_url")
+        data["video_url"]=result.get("video_url")
+    return data
