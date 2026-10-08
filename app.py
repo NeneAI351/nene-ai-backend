@@ -370,8 +370,28 @@ async def generate(req: GenerateRequest):
             if exc.status_code < 500 and "card_required" not in detail.lower():
                 raise
             if "card_required" in detail.lower() and MAGIC_HOUR_API_KEY:
-                logger.warning("Pixazo rejected Auto request because this account requires a card; falling back to Magic Hour before any job was accepted.")
-                return await magic_hour_generate(req, kind)
+                # Pixazo rejected before accepting a job, so it is safe to fall back.
+                # If the user chose Auto and the request was 720p/1080p, use Magic
+                # Hour's free 480p tier rather than creating a second failure because
+                # the free Magic Hour tier does not support the higher resolutions.
+                logger.warning(
+                    "Pixazo rejected Auto request because this account requires a card; "
+                    "falling back to Magic Hour at a free-compatible resolution."
+                )
+                fallback_req = GenerateRequest(
+                    type=req.type,
+                    prompt=req.prompt,
+                    model=req.model,
+                    resolution="480p",
+                    duration=req.duration,
+                    aspect_ratio=req.aspect_ratio,
+                    camera_motion=req.camera_motion,
+                    image_url=req.image_url,
+                    image_uri=req.image_uri,
+                    audio_url=req.audio_url,
+                    provider="magic-hour",
+                )
+                return await magic_hour_generate(fallback_req, kind)
             raise
     if MAGIC_HOUR_API_KEY:
         return await magic_hour_generate(req, kind)
