@@ -395,7 +395,10 @@ async def generate(req: GenerateRequest):
                     prompt=req.prompt,
                     model=req.model,
                     resolution="480p",
-                    duration=req.duration,
+                    # Auto's Magic Hour fallback is deliberately limited to the
+                    # free-compatible 3-second clip. This avoids asking the free tier
+                    # for the frontend's LTX-oriented 6-second minimum.
+                    duration=3,
                     aspect_ratio=req.aspect_ratio,
                     camera_motion=req.camera_motion,
                     image_url=req.image_url,
