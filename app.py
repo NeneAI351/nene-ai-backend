@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.8.0-story-pipeline")
+app = FastAPI(title="NENE AI Backend", version="0.8.1-idempotent-generation")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
@@ -96,7 +96,7 @@ def health():
     return {
         "ok": True,
         "service": "nene-ai-backend",
-        "version": "0.8.0-story-pipeline",
+        "version": "0.8.1-idempotent-generation",
         "provider": configured[0] if configured else "none",
         "providers": configured,
         "pixazo_configured": bool(PIXAZO_API_KEY),
