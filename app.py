@@ -153,8 +153,20 @@ def magic_hour_headers():
 
 
 def magic_hour_model(req: GenerateRequest) -> str:
+    # Normalize NENE AI's internal model aliases to a model ID that Magic Hour
+    # actually accepts. In particular, the frontend may send ltx-2-5-fast for
+    # Auto/LTX, but Magic Hour expects the dotted ID ltx-2.5.
     model = (req.model or "").strip().lower()
-    return model if model and model not in {"ltx", "ltx-2", "ltx-2.5"} else "ltx-2.5"
+    aliases = {
+        "": "ltx-2.5",
+        "ltx": "ltx-2.5",
+        "ltx-2": "ltx-2.5",
+        "ltx-2-5": "ltx-2.5",
+        "ltx-2-5-fast": "ltx-2.5",
+        "ltx-2.5-fast": "ltx-2.5",
+        "ltx-2.5": "ltx-2.5",
+    }
+    return aliases.get(model, model)
 
 
 def magic_hour_duration(value: Any) -> int:
