@@ -171,6 +171,30 @@ async def initialize_schema() -> None:
     );
     CREATE INDEX IF NOT EXISTS idx_provider_costs_generation ON provider_costs(generation_id);
 
+    CREATE TABLE IF NOT EXISTS provider_rate_cards (
+        id UUID PRIMARY KEY,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        resolution TEXT NOT NULL,
+        usd_per_second NUMERIC(12,8) NOT NULL,
+        cost_basis TEXT NOT NULL,
+        estimated BOOLEAN NOT NULL DEFAULT FALSE,
+        source_url TEXT,
+        effective_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        UNIQUE(provider, model, resolution)
+    );
+    CREATE INDEX IF NOT EXISTS idx_provider_rate_cards_lookup
+        ON provider_rate_cards(provider, model, resolution, active);
+
+    CREATE TABLE IF NOT EXISTS pricing_settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        nene_credit_usd NUMERIC(12,6) NOT NULL DEFAULT 0.01,
+        target_gross_margin NUMERIC(6,5) NOT NULL DEFAULT 0.70,
+        provider_risk_buffer NUMERIC(6,5) NOT NULL DEFAULT 0.10,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
     CREATE TABLE IF NOT EXISTS generation_idempotency (
         id UUID PRIMARY KEY,
         idempotency_key TEXT NOT NULL UNIQUE,
