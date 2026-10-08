@@ -20,9 +20,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from database import (database_configured, start_database, close_database, initialize_schema, get_idempotency as db_get_idempotency, create_idempotency as db_create_idempotency, complete_idempotency as db_complete_idempotency, delete_idempotency as db_delete_idempotency)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.8.1-idempotent-generation")
+app = FastAPI(title="NENE AI Backend", version="0.9.0-postgres-foundation")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
@@ -41,6 +43,17 @@ STORY_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 GENERATION_IDEMPOTENCY = {}
 GENERATION_IDEMPOTENCY_LOCK = asyncio.Lock()
 GENERATION_IDEMPOTENCY_MAX = 1000
+
+@app.on_event("startup")
+async def _startup_database():
+    if database_configured():
+        await start_database()
+        await initialize_schema()
+        logger.info("NENE AI PostgreSQL database initialized.")
+
+@app.on_event("shutdown")
+async def _shutdown_database():
+    await close_database()
 
 def _trim_idempotency_registry():
     if len(GENERATION_IDEMPOTENCY) <= GENERATION_IDEMPOTENCY_MAX:
@@ -96,7 +109,8 @@ def health():
     return {
         "ok": True,
         "service": "nene-ai-backend",
-        "version": "0.8.1-idempotent-generation",
+        "version": "0.9.0-postgres-foundation",
+        "database_configured": database_configured(),
         "provider": configured[0] if configured else "none",
         "providers": configured,
         "pixazo_configured": bool(PIXAZO_API_KEY),
