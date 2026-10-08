@@ -21,10 +21,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from database import (database_configured, start_database, close_database, initialize_schema, get_idempotency as db_get_idempotency, create_idempotency as db_create_idempotency, complete_idempotency as db_complete_idempotency, delete_idempotency as db_delete_idempotency)
+from pricing import quote as pricing_quote, catalog as pricing_catalog
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.9.0-postgres-foundation")
+app = FastAPI(title="NENE AI Backend", version="0.10.0-commercial-pricing-foundation")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
@@ -130,6 +131,31 @@ def provider_info():
         "selection_order": ["pixazo", "magic-hour", "ltx"],
         "note": "Auto routing does not retry an accepted generation on another provider.",
     }
+
+@app.get("/api/pricing/catalog")
+def pricing_catalog_endpoint():
+    """Return the current internal provider rate card and margin assumptions."""
+    return {"ok": True, **pricing_catalog()}
+
+
+class PricingQuoteRequest(BaseModel):
+    provider: str
+    model: str = "ltx-2-5-fast"
+    resolution: str = "720p"
+    duration: float = 5
+    target_margin: Optional[float] = None
+
+
+@app.post("/api/pricing/quote")
+def pricing_quote_endpoint(req: PricingQuoteRequest):
+    """Calculate provider cost, NENE credits, revenue value and expected margin."""
+    try:
+        return {"ok": True, **pricing_quote(req.provider, req.model, req.resolution, req.duration, req.target_margin)}
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
 
 @app.post("/api/image-upload")
 async def image_upload(req: ImageUploadRequest):
