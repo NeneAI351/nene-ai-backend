@@ -14,11 +14,13 @@ from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.6.0-quality-test")
+app = FastAPI(title="NENE AI Backend", version="0.7.0-multi-provider")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
 PIXAZO_API_KEY = os.getenv("PIXAZO_API_KEY", "").strip()
+MAGIC_HOUR_API_KEY = os.getenv("MAGIC_HOUR_API_KEY", "").strip()
+MAGIC_HOUR_API_BASE_URL = os.getenv("MAGIC_HOUR_API_BASE_URL", "https://api.magichour.ai").rstrip("/")
 LTX_API_BASE_URL = os.getenv("LTX_API_BASE_URL", "https://api.ltx.io").rstrip("/")
 PIXAZO_API_BASE_URL = "https://gateway.pixazo.ai"
 TEMP_DIR = Path("/tmp/nene_images")
@@ -35,6 +37,7 @@ class GenerateRequest(BaseModel):
     image_url: Optional[str] = None
     image_uri: Optional[str] = None
     audio_url: Optional[str] = None
+    provider: str = "auto"
 
 class ImageUploadRequest(BaseModel):
     data_uri: str
@@ -56,17 +59,35 @@ def resolution_value(value: str) -> str:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "nene-ai-backend", "provider": "pixazo" if PIXAZO_API_KEY else "ltx", "pixazo_configured": bool(PIXAZO_API_KEY), "ltx_configured": bool(LTX_API_KEY), "api_base": PIXAZO_API_BASE_URL if PIXAZO_API_KEY else LTX_API_BASE_URL}
+    configured = []
+    if PIXAZO_API_KEY:
+        configured.append("pixazo")
+    if MAGIC_HOUR_API_KEY:
+        configured.append("magic-hour")
+    if LTX_API_KEY:
+        configured.append("ltx")
+    return {
+        "ok": True,
+        "service": "nene-ai-backend",
+        "version": "0.7.0-multi-provider",
+        "provider": configured[0] if configured else "none",
+        "providers": configured,
+        "pixazo_configured": bool(PIXAZO_API_KEY),
+        "magic_hour_configured": bool(MAGIC_HOUR_API_KEY),
+        "ltx_configured": bool(LTX_API_KEY),
+    }
 
 @app.get("/api/provider-info")
 def provider_info():
     return {
-        "provider": "pixazo" if PIXAZO_API_KEY else "ltx",
-        "pixazo_configured": bool(PIXAZO_API_KEY),
-        "pixazo_base": PIXAZO_API_BASE_URL,
-        "status_endpoint": f"{PIXAZO_API_BASE_URL}/v2/requests/status/{{request_id}}",
-        "polling": "5-10 seconds",
-        "terminal_statuses": ["COMPLETED", "FAILED", "ERROR"],
+        "default_strategy": "auto",
+        "providers": {
+            "pixazo": {"configured": bool(PIXAZO_API_KEY), "base_url": PIXAZO_API_BASE_URL},
+            "magic-hour": {"configured": bool(MAGIC_HOUR_API_KEY), "base_url": MAGIC_HOUR_API_BASE_URL},
+            "ltx": {"configured": bool(LTX_API_KEY), "base_url": LTX_API_BASE_URL},
+        },
+        "selection_order": ["pixazo", "magic-hour", "ltx"],
+        "note": "Auto routing does not retry an accepted generation on another provider.",
     }
 
 @app.post("/api/image-upload")
@@ -126,6 +147,106 @@ async def temp_image(name: str):
         raise HTTPException(status_code=404, detail="Temporary image not found.")
     mime, _ = mimetypes.guess_type(str(path))
     return FileResponse(path, media_type=mime or "application/octet-stream", headers={"Cache-Control":"public, max-age=300"})
+
+def magic_hour_headers():
+    return {"Authorization": f"Bearer {MAGIC_HOUR_API_KEY}", "Content-Type": "application/json", "Accept": "application/json"}
+
+
+def magic_hour_model(req: GenerateRequest) -> str:
+    model = (req.model or "").strip().lower()
+    return model if model and model not in {"ltx", "ltx-2", "ltx-2.5"} else "ltx-2.5"
+
+
+def magic_hour_duration(value: Any) -> int:
+    try:
+        n = int(float(value))
+    except Exception:
+        n = 6
+    return max(1, min(60, n))
+
+
+def magic_hour_resolution(value: str) -> str:
+    value = (value or "").lower()
+    if "1080" in value:
+        return "1080p"
+    if "480" in value:
+        return "480p"
+    return "720p"
+
+
+async def magic_hour_upload_image(image_url: str) -> str:
+    if not image_url or not image_url.startswith("http"):
+        raise HTTPException(status_code=400, detail="Magic Hour image-to-video requires an image URL.")
+
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        source = await client.get(image_url)
+        if source.status_code >= 400:
+            raise HTTPException(status_code=400, detail="Magic Hour could not download the source image.")
+        raw = source.content
+        content_type = (source.headers.get("content-type") or "").lower()
+        extension = "jpg"
+        if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+            extension = "png"
+        elif len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            extension = "webp"
+
+        upload_res = await client.post(
+            f"{MAGIC_HOUR_API_BASE_URL}/v1/files/upload-urls",
+            headers=magic_hour_headers(),
+            json={"items": [{"type": "image", "extension": extension}]},
+        )
+        if upload_res.status_code >= 400:
+            raise HTTPException(status_code=upload_res.status_code, detail=upload_res.text)
+        data = upload_res.json()
+        item = data.get("items", [])[0]
+        upload_url = item["upload_url"]
+        file_path = item["file_path"]
+        put_res = await client.put(
+            upload_url,
+            content=raw,
+            headers={"Content-Type": content_type or f"image/{extension}"},
+        )
+        if put_res.status_code >= 400:
+            raise HTTPException(status_code=put_res.status_code, detail=put_res.text)
+        return file_path
+
+
+async def magic_hour_generate(req: GenerateRequest, kind: str):
+    if not MAGIC_HOUR_API_KEY:
+        raise HTTPException(status_code=503, detail="MAGIC_HOUR_API_KEY is not configured.")
+
+    aspect = (req.aspect_ratio or "16:9").strip()
+    if aspect not in {"16:9", "9:16", "1:1"}:
+        aspect = "16:9"
+
+    payload = {
+        "end_seconds": magic_hour_duration(req.duration),
+        "aspect_ratio": aspect,
+        "resolution": magic_hour_resolution(req.resolution),
+        "model": magic_hour_model(req),
+        "audio": False,
+        "style": {"prompt": req.prompt.strip()},
+        "name": "NENE AI generation",
+    }
+
+    if kind == "image-to-video":
+        image = req.image_url or req.image_uri
+        file_path = await magic_hour_upload_image(image)
+        payload["assets"] = {"image_file_path": file_path}
+        endpoint = f"{MAGIC_HOUR_API_BASE_URL}/v1/image-to-video"
+    else:
+        endpoint = f"{MAGIC_HOUR_API_BASE_URL}/v1/text-to-video"
+
+    async with httpx.AsyncClient(timeout=90) as client:
+        response = await client.post(endpoint, headers=magic_hour_headers(), json=payload)
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+    data = response.json()
+    job_id = data.get("id")
+    if not job_id:
+        raise HTTPException(status_code=502, detail=f"Magic Hour returned no project id: {data}")
+    return {"ok": True, "job_id": job_id, "provider": "magic-hour", "type": kind, "raw": data}
+
 
 async def pixazo_generate(req: GenerateRequest, kind: str):
     if not PIXAZO_API_KEY:
@@ -227,10 +348,54 @@ async def ltx_generate(req: GenerateRequest, kind: str):
 
 @app.post("/api/generate")
 async def generate(req: GenerateRequest):
-    kind=req.type.lower().strip()
-    if kind not in {"text-to-video","image-to-video"}: raise HTTPException(status_code=400, detail="Supported types: text-to-video, image-to-video")
-    if PIXAZO_API_KEY: return await pixazo_generate(req, kind)
-    return await ltx_generate(req, kind)
+    kind = req.type.lower().strip()
+    if kind not in {"text-to-video", "image-to-video"}:
+        raise HTTPException(status_code=400, detail="Supported types: text-to-video, image-to-video")
+
+    requested = (req.provider or "auto").lower().strip()
+    if requested in {"pixazo", "pixazo-ltx"}:
+        return await pixazo_generate(req, kind)
+    if requested in {"magic-hour", "magichour", "magic_hour"}:
+        return await magic_hour_generate(req, kind)
+    if requested in {"ltx", "ltx-direct"}:
+        return await ltx_generate(req, kind)
+    if requested not in {"auto", "best", ""}:
+        raise HTTPException(status_code=400, detail="Unknown provider. Use auto, pixazo, magic-hour, or ltx.")
+
+    if PIXAZO_API_KEY:
+        return await pixazo_generate(req, kind)
+    if MAGIC_HOUR_API_KEY:
+        return await magic_hour_generate(req, kind)
+    if LTX_API_KEY:
+        return await ltx_generate(req, kind)
+    raise HTTPException(status_code=503, detail="No video provider is configured.")
+
+@app.get("/api/jobs/{job_id}")
+async def job(job_id: str, mode: str="text-to-video", provider: str=""):
+    kind = mode if mode in {"text-to-video", "image-to-video"} else "text-to-video"
+    active = (provider or ("pixazo" if PIXAZO_API_KEY else ("magic-hour" if MAGIC_HOUR_API_KEY else "ltx"))).lower().strip()
+
+    if active in {"magic-hour", "magichour", "magic_hour"}:
+        if not MAGIC_HOUR_API_KEY:
+            raise HTTPException(status_code=503, detail="MAGIC_HOUR_API_KEY is not configured.")
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.get(
+                f"{MAGIC_HOUR_API_BASE_URL}/v1/video-projects/{job_id}",
+                headers=magic_hour_headers(),
+            )
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        data = response.json()
+        status = str(data.get("status") or "").lower()
+        downloads = data.get("downloads") or []
+        data["_nene_status"] = status
+        if status in {"complete", "completed"} and downloads:
+            first = downloads[0]
+            if isinstance(first, dict) and first.get("url"):
+                data["_nene_video_url"] = first["url"]
+            elif isinstance(first, str):
+                data["_nene_video_url"] = first
+        return data
 
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str, mode: str="text-to-video", provider: str=""):
