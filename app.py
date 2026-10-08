@@ -3,6 +3,9 @@ import base64
 import uuid
 import mimetypes
 import logging
+import subprocess
+import tempfile
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -25,6 +28,8 @@ LTX_API_BASE_URL = os.getenv("LTX_API_BASE_URL", "https://api.ltx.io").rstrip("/
 PIXAZO_API_BASE_URL = "https://gateway.pixazo.ai"
 TEMP_DIR = Path("/tmp/nene_images")
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+STORY_VIDEO_DIR = Path("/tmp/nene_story_videos")
+STORY_VIDEO_DIR.mkdir(parents=True, exist_ok=True)
 
 class GenerateRequest(BaseModel):
     type: str = Field(default="text-to-video")
@@ -357,6 +362,131 @@ async def ltx_generate(req: GenerateRequest, kind: str):
     data=r.json(); job_id=data.get("id") or data.get("job_id")
     if not job_id: raise HTTPException(status_code=502, detail=f"LTX returned no job id: {data}")
     return {"ok":True,"job_id":job_id,"provider":"ltx","type":kind,"raw":data}
+
+
+class StoryAssembleRequest(BaseModel):
+    scene_urls: list[str]
+    title: str = "NENE AI Story"
+
+
+def _safe_story_filename(name: str) -> str:
+    base = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in (name or "story").strip())
+    return (base[:60] or "story")
+
+
+async def _download_story_clip(client: httpx.AsyncClient, url: str, destination: Path, max_bytes: int = 80 * 1024 * 1024):
+    if not url or not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Story scene URLs must be public HTTP(S) URLs.")
+    try:
+        async with client.stream("GET", url, follow_redirects=True) as response:
+            if response.status_code >= 400:
+                raise HTTPException(status_code=400, detail=f"Could not download story scene: HTTP {response.status_code}.")
+            content_length = response.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > max_bytes:
+                        raise HTTPException(status_code=413, detail="A story scene is too large to assemble in the prototype.")
+                except ValueError:
+                    pass
+            total = 0
+            with destination.open("wb") as handle:
+                async for chunk in response.aiter_bytes(1024 * 1024):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        handle.close()
+                        destination.unlink(missing_ok=True)
+                        raise HTTPException(status_code=413, detail="A story scene is too large to assemble in the prototype.")
+                    handle.write(chunk)
+    except HTTPException:
+        raise
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not download story scene: {exc}")
+
+
+def _run_ffmpeg(args: list[str], timeout: int = 300):
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=503, detail="FFmpeg is not available on the NENE AI video-processing runtime.")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Story assembly timed out. The scenes are still available individually.")
+    if result.returncode != 0:
+        logger.error("FFmpeg failed: %s", result.stderr[-4000:])
+        raise HTTPException(status_code=502, detail="NENE AI could not assemble these scene videos. The individual scenes remain available.")
+    return result
+
+
+@app.post("/api/story/assemble")
+async def assemble_story(req: StoryAssembleRequest):
+    urls = [str(url).strip() for url in (req.scene_urls or []) if str(url).strip()]
+    if not urls:
+        raise HTTPException(status_code=400, detail="At least one completed story scene is required.")
+    if len(urls) > 20:
+        raise HTTPException(status_code=400, detail="A prototype story can contain at most 20 scenes.")
+    if len(set(urls)) != len(urls):
+        raise HTTPException(status_code=400, detail="Duplicate scene URLs were supplied. Refusing to assemble duplicate clips.")
+
+    work_dir = Path(tempfile.mkdtemp(prefix="nene_story_"))
+    normalized = []
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            for index, url in enumerate(urls, start=1):
+                source = work_dir / f"source_{index:02d}.mp4"
+                normalized_file = work_dir / f"scene_{index:02d}.mp4"
+                await _download_story_clip(client, url, source)
+                # Normalize every clip so different provider encoders/resolutions do
+                # not make the concat step fail. Keep the user's scene order.
+                _run_ffmpeg([
+                    "-i", str(source),
+                    "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                    "-r", "30",
+                    "-c:v", "libx264",
+                    "-preset", "veryfast",
+                    "-crf", "22",
+                    "-c:a", "aac",
+                    "-b:a", "128k",
+                    "-movflags", "+faststart",
+                    str(normalized_file),
+                ], timeout=180)
+                normalized.append(normalized_file)
+
+        concat_file = work_dir / "concat.txt"
+        concat_file.write_text(
+            "".join("file '" + str(path).replace("'", "'\\''") + "'\n" for path in normalized),
+            encoding="utf-8",
+        )
+        output_name = f"{uuid.uuid4().hex}_{_safe_story_filename(req.title)}.mp4"
+        output_path = STORY_VIDEO_DIR / output_name
+        _run_ffmpeg([
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_file),
+            "-c", "copy",
+            "-movflags", "+faststart",
+            str(output_path),
+        ], timeout=300)
+        return {
+            "ok": True,
+            "video_url": f"https://nene-ai.onrender.com/api/story-videos/{output_name}",
+            "scene_count": len(urls),
+            "title": req.title,
+        }
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@app.get("/api/story-videos/{name}")
+async def story_video(name: str):
+    safe = Path(name).name
+    path = STORY_VIDEO_DIR / safe
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Story video not found. Prototype storage is temporary.")
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "public, max-age=3600"})
 
 @app.post("/api/generate")
 async def generate(req: GenerateRequest):
