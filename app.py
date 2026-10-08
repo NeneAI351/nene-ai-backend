@@ -614,6 +614,33 @@ async def generate(req: GenerateRequest, idempotency_key: Optional[str] = Header
 
     request_fingerprint = json.dumps(req.model_dump(), sort_keys=True, default=str)
 
+    # Same-process joining is kept in memory. PostgreSQL makes completed
+    # idempotency durable across Render restarts and backend instances.
+    if database_configured():
+        try:
+            durable = await db_get_idempotency(key)
+        except Exception as exc:
+            logger.exception("Database idempotency lookup failed.")
+            raise HTTPException(status_code=503, detail=f"NENE AI database is unavailable: {exc}")
+        if durable:
+            if durable.get("request_fingerprint") != request_fingerprint:
+                raise HTTPException(status_code=409, detail="This Idempotency-Key was already used for a different generation request.")
+            if durable.get("response") is not None:
+                return durable["response"]
+            raise HTTPException(status_code=409, detail="This generation is already in progress. Do not submit it again.")
+        try:
+            inserted = await db_create_idempotency(key, request_fingerprint, str(uuid.uuid4()))
+        except Exception as exc:
+            logger.exception("Database idempotency reservation failed.")
+            raise HTTPException(status_code=503, detail=f"NENE AI database is unavailable: {exc}")
+        if not inserted:
+            durable = await db_get_idempotency(key)
+            if durable and durable.get("request_fingerprint") != request_fingerprint:
+                raise HTTPException(status_code=409, detail="This Idempotency-Key was already used for a different generation request.")
+            if durable and durable.get("response") is not None:
+                return durable["response"]
+            raise HTTPException(status_code=409, detail="This generation is already in progress. Do not submit it again.")
+
     async with GENERATION_IDEMPOTENCY_LOCK:
         existing = GENERATION_IDEMPOTENCY.get(key)
         if existing:
@@ -638,6 +665,11 @@ async def generate(req: GenerateRequest, idempotency_key: Optional[str] = Header
             current = GENERATION_IDEMPOTENCY.get(key)
             if current and current.get("task") is task:
                 GENERATION_IDEMPOTENCY.pop(key, None)
+        if database_configured():
+            try:
+                await db_delete_idempotency(key)
+            except Exception:
+                logger.exception("Failed to clear durable idempotency reservation after generation failure.")
         raise
 
     async with GENERATION_IDEMPOTENCY_LOCK:
@@ -646,6 +678,14 @@ async def generate(req: GenerateRequest, idempotency_key: Optional[str] = Header
             current["response"] = response
             current["task"] = None
             current["created_at"] = asyncio.get_running_loop().time()
+
+    if database_configured():
+        try:
+            await db_complete_idempotency(key, response)
+        except Exception:
+            # Provider work is already accepted; never turn a successful
+            # generation into an apparent failure that could cause a retry.
+            logger.exception("Generation completed but durable idempotency could not be saved.")
     return response
 
 @app.get("/api/jobs/{job_id}")
