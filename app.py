@@ -441,18 +441,41 @@ async def assemble_story(req: StoryAssembleRequest):
                 await _download_story_clip(client, url, source)
                 # Normalize every clip so different provider encoders/resolutions do
                 # not make the concat step fail. Keep the user's scene order.
-                _run_ffmpeg([
-                    "-i", str(source),
-                    "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-                    "-r", "30",
-                    "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "22",
-                    "-c:a", "aac",
-                    "-b:a", "128k",
-                    "-movflags", "+faststart",
-                    str(normalized_file),
-                ], timeout=180)
+                # Normalize every clip to the same video/audio stream layout.
+                # Provider exports can be video-only, so add silent AAC when needed.
+                if _has_audio_stream(source):
+                    ffmpeg_args = [
+                        "-i", str(source),
+                        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                        "-r", "30",
+                        "-map", "0:v:0",
+                        "-map", "0:a:0",
+                        "-c:v", "libx264",
+                        "-preset", "veryfast",
+                        "-crf", "22",
+                        "-c:a", "aac",
+                        "-b:a", "128k",
+                        "-movflags", "+faststart",
+                        str(normalized_file),
+                    ]
+                else:
+                    ffmpeg_args = [
+                        "-i", str(source),
+                        "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                        "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                        "-r", "30",
+                        "-map", "0:v:0",
+                        "-map", "1:a:0",
+                        "-shortest",
+                        "-c:v", "libx264",
+                        "-preset", "veryfast",
+                        "-crf", "22",
+                        "-c:a", "aac",
+                        "-b:a", "128k",
+                        "-movflags", "+faststart",
+                        str(normalized_file),
+                    ]
+                _run_ffmpeg(ffmpeg_args, timeout=180)
                 normalized.append(normalized_file)
 
         concat_file = work_dir / "concat.txt"
