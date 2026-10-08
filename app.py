@@ -380,18 +380,32 @@ async def generate(req: GenerateRequest):
     raise HTTPException(status_code=503, detail="No video provider is configured.")
 
 @app.get("/api/jobs/{job_id}")
-async def job(job_id: str, mode: str="text-to-video", provider: str=""):
+async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
     kind = mode if mode in {"text-to-video", "image-to-video"} else "text-to-video"
-    active = (provider or ("pixazo" if PIXAZO_API_KEY else ("magic-hour" if MAGIC_HOUR_API_KEY else "ltx"))).lower().strip()
+    active = (provider or "").lower().strip()
+
+    # The frontend sends the provider returned by /api/generate. This is important
+    # for Auto, because Auto may fall back from Pixazo to Magic Hour before a job
+    # is accepted.
+    if not active:
+        if MAGIC_HOUR_API_KEY:
+            active = "magic-hour"
+        elif PIXAZO_API_KEY:
+            active = "pixazo"
+        elif LTX_API_KEY:
+            active = "ltx"
 
     if active in {"magic-hour", "magichour", "magic_hour"}:
         if not MAGIC_HOUR_API_KEY:
             raise HTTPException(status_code=503, detail="MAGIC_HOUR_API_KEY is not configured.")
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.get(
-                f"{MAGIC_HOUR_API_BASE_URL}/v1/video-projects/{job_id}",
-                headers=magic_hour_headers(),
-            )
+            try:
+                response = await client.get(
+                    f"{MAGIC_HOUR_API_BASE_URL}/v1/video-projects/{job_id}",
+                    headers=magic_hour_headers(),
+                )
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f"Magic Hour connection error: {exc}")
         if response.status_code >= 400:
             raise HTTPException(status_code=response.status_code, detail=response.text)
         data = response.json()
@@ -400,62 +414,64 @@ async def job(job_id: str, mode: str="text-to-video", provider: str=""):
         data["_nene_status"] = status
         if status in {"complete", "completed"} and downloads:
             first = downloads[0]
-            video_url = None
-            if isinstance(first, dict):
-                video_url = first.get("url")
-            elif isinstance(first, str):
-                video_url = first
+            video_url = first.get("url") if isinstance(first, dict) else (first if isinstance(first, str) else None)
             if video_url:
                 data["_nene_video_url"] = video_url
                 data["video_url"] = video_url
         return data
 
-@app.get("/api/jobs/{job_id}")
-async def job(job_id: str, mode: str="text-to-video", provider: str=""):
-    kind=mode if mode in {"text-to-video","image-to-video"} else "text-to-video"
-    active=(provider or ("pixazo" if PIXAZO_API_KEY else "ltx")).lower().strip()
-    if active=="pixazo":
-        if not PIXAZO_API_KEY: raise HTTPException(status_code=503, detail="PIXAZO_API_KEY is not configured.")
-        endpoint=f"{PIXAZO_API_BASE_URL}/v2/requests/status/{job_id}"
+    if active in {"pixazo", "pixazo-ltx"}:
+        if not PIXAZO_API_KEY:
+            raise HTTPException(status_code=503, detail="PIXAZO_API_KEY is not configured.")
+        endpoint = f"{PIXAZO_API_BASE_URL}/v2/requests/status/{job_id}"
         async with httpx.AsyncClient(timeout=60) as client:
-            try: r=await client.get(endpoint, headers={"Ocp-Apim-Subscription-Key":PIXAZO_API_KEY})
-            except httpx.HTTPError as exc: raise HTTPException(status_code=502, detail=f"Pixazo connection error: {exc}")
-        if r.status_code>=400:
+            try:
+                r = await client.get(endpoint, headers={"Ocp-Apim-Subscription-Key": PIXAZO_API_KEY})
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f"Pixazo connection error: {exc}")
+        if r.status_code >= 400:
             logger.error("Pixazo STATUS HTTP %s job=%s: %s", r.status_code, job_id, r.text[:4000])
             raise HTTPException(status_code=r.status_code, detail=r.text)
         try:
             data = r.json()
         except Exception:
-            logger.error("Pixazo STATUS non-JSON job=%s: %s", job_id, r.text[:4000])
             raise HTTPException(status_code=502, detail="Pixazo returned an invalid status response.")
         status = str(data.get("status") or "").upper()
         error = data.get("error")
         output = data.get("output") or {}
         media = output.get("media_url") if isinstance(output, dict) else None
-        logger.info(
-            "Pixazo STATUS job=%s status=%s error=%s media_url=%s",
-            job_id, status, str(error)[:1000] if error else None,
-            bool(media)
-        )
-        # Return the provider response plus small normalized fields for the frontend.
         data["_nene_status"] = status
         data["_nene_error"] = error
         if isinstance(media, list) and media:
             data["_nene_video_url"] = media[0]
+            data["video_url"] = media[0]
         elif isinstance(media, str):
             data["_nene_video_url"] = media
+            data["video_url"] = media
         return data
-    if not LTX_API_KEY: raise HTTPException(status_code=503, detail="LTX_API_KEY is not configured.")
-    endpoint=f"{LTX_API_BASE_URL}/v2/{kind}/{job_id}"
-    async with httpx.AsyncClient(timeout=60) as client:
-        try: r=await client.get(endpoint, headers={"Authorization":f"Bearer {LTX_API_KEY}"})
-        except httpx.HTTPError as exc: raise HTTPException(status_code=502, detail=f"LTX connection error: {exc}")
-    if r.status_code>=400: raise HTTPException(status_code=r.status_code, detail=r.text)
-    data=r.json()
-    status=str(data.get("status") or "").lower()
-    data["_nene_status"]=status
-    result=data.get("result") or {}
-    if isinstance(result,dict) and result.get("video_url"):
-        data["_nene_video_url"]=result.get("video_url")
-        data["video_url"]=result.get("video_url")
-    return data
+
+    if active in {"ltx", "ltx-direct"}:
+        if not LTX_API_KEY:
+            raise HTTPException(status_code=503, detail="LTX_API_KEY is not configured.")
+        endpoint = f"{LTX_API_BASE_URL}/v2/{kind}/{job_id}"
+        async with httpx.AsyncClient(timeout=60) as client:
+            try:
+                r = await client.get(endpoint, headers={"Authorization": f"Bearer {LTX_API_KEY}"})
+            except httpx.HTTPError as exc:
+                raise HTTPException(status_code=502, detail=f"LTX connection error: {exc}")
+        if r.status_code >= 400:
+            raise HTTPException(status_code=r.status_code, detail=r.text)
+        try:
+            data = r.json()
+        except Exception:
+            raise HTTPException(status_code=502, detail="LTX returned an invalid status response.")
+        status = str(data.get("status") or "").lower()
+        data["_nene_status"] = status
+        result = data.get("result") or {}
+        if isinstance(result, dict) and result.get("video_url"):
+            data["_nene_video_url"] = result.get("video_url")
+            data["video_url"] = result.get("video_url")
+        return data
+
+    raise HTTPException(status_code=400, detail="Unknown provider. Use pixazo, magic-hour, or ltx.")
+
