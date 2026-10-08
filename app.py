@@ -6,8 +6,11 @@ import logging
 import subprocess
 import tempfile
 import shutil
+import socket
+import ipaddress
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -97,6 +100,7 @@ def provider_info():
 
 @app.post("/api/image-upload")
 async def image_upload(req: ImageUploadRequest):
+    _cleanup_story_storage()
     """Accept supported browser image data URIs and normalize the file type safely.
 
     Some mobile browsers/file pickers can report an unusual MIME label even when the
@@ -374,9 +378,43 @@ def _safe_story_filename(name: str) -> str:
     return (base[:60] or "story")
 
 
+def _cleanup_story_storage(max_age_seconds: int = 6 * 3600):
+    """Best-effort cleanup for prototype files so /tmp cannot grow forever."""
+    cutoff = __import__("time").time() - max_age_seconds
+    for folder in (TEMP_DIR, STORY_VIDEO_DIR):
+        try:
+            for path in folder.iterdir():
+                try:
+                    if path.is_file() and path.stat().st_mtime < cutoff:
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    continue
+        except OSError:
+            continue
+
+
+def _validate_public_media_url(url: str):
+    """Reject local/private targets before the server downloads user-supplied media URLs."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"https", "http"} or not parsed.hostname:
+        raise HTTPException(status_code=400, detail="Media URL must be a valid HTTP(S) URL.")
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
+        raise HTTPException(status_code=400, detail="Private/local media URLs are not allowed.")
+    try:
+        addresses = {info[4][0] for info in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)}
+    except OSError:
+        raise HTTPException(status_code=400, detail="Media host could not be resolved.")
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            raise HTTPException(status_code=400, detail="Private/local media URLs are not allowed.")
+
+
 async def _download_story_clip(client: httpx.AsyncClient, url: str, destination: Path, max_bytes: int = 80 * 1024 * 1024):
-    if not url or not url.startswith(("http://", "https://")):
+    if not url:
         raise HTTPException(status_code=400, detail="Story scene URLs must be public HTTP(S) URLs.")
+    _validate_public_media_url(url)
     try:
         async with client.stream("GET", url, follow_redirects=True) as response:
             if response.status_code >= 400:
@@ -423,6 +461,7 @@ def _run_ffmpeg(args: list[str], timeout: int = 300):
 
 @app.post("/api/story/assemble")
 async def assemble_story(req: StoryAssembleRequest):
+    _cleanup_story_storage()
     urls = [str(url).strip() for url in (req.scene_urls or []) if str(url).strip()]
     if not urls:
         raise HTTPException(status_code=400, detail="At least one completed story scene is required.")
@@ -505,6 +544,7 @@ async def assemble_story(req: StoryAssembleRequest):
 
 @app.get("/api/story-videos/{name}")
 async def story_video(name: str):
+    _cleanup_story_storage()
     safe = Path(name).name
     path = STORY_VIDEO_DIR / safe
     if not path.exists():
