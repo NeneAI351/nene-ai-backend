@@ -25,6 +25,7 @@ from pricing import quote as pricing_quote, catalog as pricing_catalog
 from wallet import router as wallet_router
 from wallet_store import initialize_wallet_schema
 from rate_limits import enforce_rate_limit, close_rate_limit_client
+from auth import get_authenticated_user_id
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
@@ -169,6 +170,8 @@ def pricing_quote_endpoint(req: PricingQuoteRequest):
 @app.post("/api/image-upload")
 async def image_upload(req: ImageUploadRequest, request: Request):
     await enforce_rate_limit(request, bucket="image-upload", limit=10, window_seconds=60)
+    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+        await get_authenticated_user_id(request)
     _cleanup_story_storage()
     """Accept supported browser image data URIs and normalize the file type safely.
 
@@ -267,8 +270,9 @@ def magic_hour_resolution(value: str) -> str:
 async def magic_hour_upload_image(image_url: str) -> str:
     if not image_url or not image_url.startswith("http"):
         raise HTTPException(status_code=400, detail="Magic Hour image-to-video requires an image URL.")
+    _validate_public_media_url(image_url)
 
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
         source = await client.get(image_url)
         if source.status_code >= 400:
             raise HTTPException(status_code=400, detail="Magic Hour could not download the source image.")
@@ -485,7 +489,9 @@ async def _download_story_clip(client: httpx.AsyncClient, url: str, destination:
         raise HTTPException(status_code=400, detail="Story scene URLs must be public HTTP(S) URLs.")
     _validate_public_media_url(url)
     try:
-        async with client.stream("GET", url, follow_redirects=True) as response:
+        async with client.stream("GET", url, follow_redirects=False) as response:
+            if 300 <= response.status_code < 400:
+                raise HTTPException(status_code=400, detail="Redirected media URLs are not allowed. Supply the final public media URL.")
             if response.status_code >= 400:
                 raise HTTPException(status_code=400, detail=f"Could not download story scene: HTTP {response.status_code}.")
             content_length = response.headers.get("content-length")
@@ -531,6 +537,8 @@ def _run_ffmpeg(args: list[str], timeout: int = 300):
 @app.post("/api/story/assemble")
 async def assemble_story(req: StoryAssembleRequest, request: Request):
     await enforce_rate_limit(request, bucket="story-assemble", limit=3, window_seconds=60)
+    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+        await get_authenticated_user_id(request)
     _cleanup_story_storage()
     urls = [str(url).strip() for url in (req.scene_urls or []) if str(url).strip()]
     if not urls:
@@ -640,6 +648,9 @@ async def _generate_uncached(req: GenerateRequest, kind: str):
 @app.post("/api/generate")
 async def generate(req: GenerateRequest, request: Request, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
     await enforce_rate_limit(request, bucket="generate", limit=5, window_seconds=60)
+    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+        await get_authenticated_user_id(request)
+        raise HTTPException(status_code=503, detail="Production video generation is disabled until server-side credit reservations, generation ownership, and durable job recovery are integrated.")
     kind = req.type.lower().strip()
     if kind not in {"text-to-video", "image-to-video"}:
         raise HTTPException(status_code=400, detail="Supported types: text-to-video, image-to-video")
@@ -728,6 +739,8 @@ async def generate(req: GenerateRequest, request: Request, idempotency_key: Opti
 
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
+    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+        raise HTTPException(status_code=503, detail="Production job polling is disabled until authenticated generation ownership is enforced.")
     kind = mode if mode in {"text-to-video", "image-to-video"} else "text-to-video"
     active = (provider or "").lower().strip()
 
