@@ -114,7 +114,7 @@ def health():
     return {
         "ok": True,
         "service": "nene-ai-backend",
-        "version": "0.9.0-postgres-foundation",
+        "version": "0.11.0-commercial-wallet-foundation",
         "database_configured": database_configured(),
         "provider": configured[0] if configured else "none",
         "providers": configured,
