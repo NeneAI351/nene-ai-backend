@@ -42,18 +42,18 @@ async def create_test_user_and_generation():
                 "INSERT INTO wallets(user_id,available_credits) VALUES (%s,100)",
                 (user_id,),
             )
-    return user_id, await create_test_generation()
+    return user_id, await create_test_generation(user_id)
 
 
-async def create_test_generation():
+async def create_test_generation(user_id: str | None = None):
     generation_id = str(uuid.uuid4())
     async with database._pool.connection() as conn:
         async with conn.transaction():
             await conn.execute(
                 """INSERT INTO generations
-                   (id,provider,generation_type,status,request)
-                   VALUES (%s,'test','text-to-video','queued','{}'::jsonb)""",
-                (generation_id,),
+                   (id,user_id,provider,generation_type,status,request)
+                   VALUES (%s,%s,'test','text-to-video','queued','{}'::jsonb)""",
+                (generation_id, user_id),
             )
     return generation_id
 
@@ -87,7 +87,7 @@ async def test_reserve_capture_release_and_idempotency(postgres_database):
 
 async def test_rejects_overspend_and_cross_generation_settlement(postgres_database):
     user_id, generation_a = await create_test_user_and_generation()
-    generation_b = await create_test_generation()
+    generation_b = await create_test_generation(user_id)
 
     insufficient = await wallet_reserve(user_id, Decimal("101"), generation_a, "reserve-test-0002")
     assert insufficient is None
@@ -99,6 +99,30 @@ async def test_rejects_overspend_and_cross_generation_settlement(postgres_databa
         await wallet_release(user_id, Decimal("21"), generation_a, "release-test-0002")
 
 
+async def test_rejects_idempotency_key_reuse_with_different_request(postgres_database):
+    user_id, generation_id = await create_test_user_and_generation()
+    await wallet_reserve(user_id, Decimal("10"), generation_id, "reserve-key-mismatch-1")
+
+    with pytest.raises(ValueError, match="idempotency key"):
+        await wallet_reserve(user_id, Decimal("11"), generation_id, "reserve-key-mismatch-1")
+
+    balance = (await wallet_balance(user_id))["wallet"]
+    assert Decimal(balance["available_credits"]) == Decimal("90")
+    assert Decimal(balance["reserved_credits"]) == Decimal("10")
+
+
+async def test_rejects_generation_owned_by_another_user(postgres_database):
+    user_a, generation_a = await create_test_user_and_generation()
+    user_b, _ = await create_test_user_and_generation()
+
+    with pytest.raises(ValueError, match="Generation not found for this user"):
+        await wallet_reserve(user_b, Decimal("10"), generation_a, "reserve-cross-user-0001")
+
+    balance = (await wallet_balance(user_b))["wallet"]
+    assert Decimal(balance["available_credits"]) == Decimal("100")
+    assert Decimal(balance["reserved_credits"]) == Decimal("0")
+
+
 async def test_concurrent_reservations_cannot_overspend(postgres_database):
     user_id, generation_a = await create_test_user_and_generation()
     async with database._pool.connection() as conn:
@@ -106,7 +130,7 @@ async def test_concurrent_reservations_cannot_overspend(postgres_database):
             await conn.execute(
                 "UPDATE wallets SET available_credits=100 WHERE user_id=%s", (user_id,)
             )
-    generation_b = await create_test_generation()
+    generation_b = await create_test_generation(user_id)
 
     results = await asyncio.gather(
         wallet_reserve(user_id, Decimal("80"), generation_a, "reserve-concurrent-a"),
