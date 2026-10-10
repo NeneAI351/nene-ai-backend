@@ -143,4 +143,3 @@ async def test_valid_signed_token_resolves_internal_user(monkeypatch):
 
     assert resolved_user_id == user_id
     assert request.state.user_id == user_id
-\n
