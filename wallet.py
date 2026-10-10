@@ -13,7 +13,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from database import database_configured, wallet_balance, wallet_ledger, wallet_reserve, wallet_release, wallet_capture, wallet_grant
+from database import database_configured
+from wallet_store import wallet_balance, wallet_ledger, wallet_reserve, wallet_release, wallet_capture, wallet_grant
 
 router = APIRouter(prefix="/api/wallet", tags=["wallet"])
 
