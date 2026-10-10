@@ -76,7 +76,7 @@ async def security_response_headers(request: Request, call_next):
         or request.url.path.startswith("/api/temp-images/")
     ):
         response.headers.setdefault("Cache-Control", "no-store")
-    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+    if _is_production_environment():
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     return response
 app.include_router(wallet_router)
@@ -218,7 +218,7 @@ def pricing_quote_endpoint(req: PricingQuoteRequest):
 @app.post("/api/image-upload")
 async def image_upload(req: ImageUploadRequest, request: Request):
     await enforce_rate_limit(request, bucket="image-upload", limit=10, window_seconds=60)
-    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+    if _is_production_environment():
         await get_authenticated_user_id(request)
     _cleanup_story_storage()
     """Accept supported browser image data URIs and normalize the file type safely.
@@ -525,7 +525,7 @@ def _validate_public_media_url(url: str):
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
         raise HTTPException(status_code=400, detail="Private/local media URLs are not allowed.")
 
-    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+    if _is_production_environment():
         allowed_hosts = {
             item.strip().lower().rstrip(".")
             for item in os.getenv("ALLOWED_MEDIA_HOSTS", "").split(",")
@@ -604,7 +604,7 @@ def _run_ffmpeg(args: list[str], timeout: int = 300):
 @app.post("/api/story/assemble")
 async def assemble_story(req: StoryAssembleRequest, request: Request):
     await enforce_rate_limit(request, bucket="story-assemble", limit=3, window_seconds=60)
-    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+    if _is_production_environment():
         await get_authenticated_user_id(request)
     _cleanup_story_storage()
     urls = [str(url).strip() for url in (req.scene_urls or []) if str(url).strip()]
@@ -715,7 +715,7 @@ async def _generate_uncached(req: GenerateRequest, kind: str):
 @app.post("/api/generate")
 async def generate(req: GenerateRequest, request: Request, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
     await enforce_rate_limit(request, bucket="generate", limit=5, window_seconds=60)
-    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+    if _is_production_environment():
         await get_authenticated_user_id(request)
         raise HTTPException(status_code=503, detail="Production video generation is disabled until server-side credit reservations, generation ownership, and durable job recovery are integrated.")
     kind = req.type.lower().strip()
@@ -806,7 +806,7 @@ async def generate(req: GenerateRequest, request: Request, idempotency_key: Opti
 
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
-    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+    if _is_production_environment():
         raise HTTPException(status_code=503, detail="Production job polling is disabled until authenticated generation ownership is enforced.")
     kind = mode if mode in {"text-to-video", "image-to-video"} else "text-to-video"
     active = (provider or "").lower().strip()
