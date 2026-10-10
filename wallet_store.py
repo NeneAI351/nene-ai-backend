@@ -105,6 +105,16 @@ async def _apply(user_id: str, amount: Decimal, operation_type: str,
 
     async with database._pool.connection() as conn:
         async with conn.transaction():
+            # The generation must exist and belong to this authenticated user.
+            # Lock it while settling credits so another transaction cannot alter
+            # ownership between validation and the wallet mutation.
+            generation = await (await conn.execute(
+                "SELECT user_id::text FROM generations WHERE id=%s FOR UPDATE",
+                (generation_id,),
+            )).fetchone()
+            if not generation or generation["user_id"] != user_id:
+                raise ValueError("Generation not found for this user.")
+
             # Create and lock first. This serializes all wallet operations for a
             # user, including concurrent requests with the same idempotency key.
             await conn.execute(
