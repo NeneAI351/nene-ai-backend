@@ -37,4 +37,4 @@ jobs:
       - name: Compile backend modules
         run: python -m compileall -q app.py auth.py database.py pricing.py rate_limits.py wallet.py wallet_store.py
       - name: Run wallet PostgreSQL integration tests
-        run: PYTHONPATH=. pytest -q tests/test_auth.py tests/test_media_url_security.py tests/test_rate_limits.py tests/test_wallet_store.py
+        run: PYTHONPATH=. pytest -q tests/test_auth.py tests/test_media_url_security.py tests/test_rate_limits.py tests/test_wallet_store.py tests/test_production_environment.py
