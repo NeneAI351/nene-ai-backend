@@ -29,8 +29,48 @@ from auth import get_authenticated_user_id
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.12.0-auth-wallet-foundation")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="NENE AI Backend", version="0.13.0-scale-security-foundation")
+
+
+def _cors_origins() -> list[str]:
+    configured = [
+        origin.strip().rstrip("/")
+        for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if configured:
+        return configured
+    # Development convenience only. Production must explicitly list the real
+    # NENE AI web origins; native clients do not depend on browser CORS.
+    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+        return []
+    return ["*"]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+)
+
+
+@app.middleware("http")
+async def security_response_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.path.startswith("/api/") and not (
+        request.url.path.startswith("/api/story-videos/")
+        or request.url.path.startswith("/api/temp-images/")
+    ):
+        response.headers.setdefault("Cache-Control", "no-store")
+    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return response
 app.include_router(wallet_router)
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
@@ -117,7 +157,7 @@ def health():
     return {
         "ok": True,
         "service": "nene-ai-backend",
-        "version": "0.12.0-auth-wallet-foundation",
+        "version": "0.13.0-scale-security-foundation",
         "auth_configured": bool(os.getenv("AUTH_JWKS_URL", "").strip() and os.getenv("AUTH_ISSUER", "").strip()),
         "shared_rate_limit_configured": bool(os.getenv("REDIS_URL", "").strip() and os.getenv("RATE_LIMIT_HMAC_SECRET", "").strip()),
         "environment": os.getenv("NENE_ENV", "development").strip().lower(),
