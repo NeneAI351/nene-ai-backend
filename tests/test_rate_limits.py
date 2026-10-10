@@ -38,7 +38,7 @@ async def test_production_fails_closed_without_shared_rate_limit_service(monkeyp
 @pytest.mark.asyncio
 async def test_production_requires_hmac_secret(monkeypatch):
     monkeypatch.setenv("NENE_ENV", "production")
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("REDIS_URL", "rediss://localhost:6379/0")
     monkeypatch.delenv("RATE_LIMIT_HMAC_SECRET", raising=False)
 
     with pytest.raises(HTTPException) as error:
@@ -52,7 +52,7 @@ async def test_production_requires_hmac_secret(monkeypatch):
 @pytest.mark.asyncio
 async def test_distributed_limit_returns_429_after_threshold(monkeypatch):
     monkeypatch.setenv("NENE_ENV", "production")
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("REDIS_URL", "rediss://localhost:6379/0")
     monkeypatch.setenv("RATE_LIMIT_HMAC_SECRET", "test-only-secret-that-is-at-least-32-bytes-long")
 
     class FakeRedis:
@@ -85,7 +85,7 @@ async def test_distributed_limit_returns_429_after_threshold(monkeypatch):
 async def test_client_ip_is_hmac_fingerprinted(monkeypatch):
     monkeypatch.setenv("NENE_ENV", "production")
     monkeypatch.setenv("RATE_LIMIT_HMAC_SECRET", "test-only-secret-that-is-at-least-32-bytes-long")
-    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("REDIS_URL", "rediss://localhost:6379/0")
 
     class FakeRedis:
         async def eval(self, script, numkeys, key, window):
