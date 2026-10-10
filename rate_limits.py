@@ -59,6 +59,11 @@ def _client_fingerprint(request: Request) -> str:
                 detail="Rate-limit identity protection is not configured.",
             )
         secret = "development-only-rate-limit-key"
+    if _is_production() and len(secret.encode()) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail="Rate-limit identity protection must use a secret of at least 32 bytes.",
+        )
     return hmac.new(secret.encode(), host.encode(), hashlib.sha256).hexdigest()[:32]
 
 
@@ -74,6 +79,11 @@ async def enforce_rate_limit(
         raise ValueError("Rate-limit limit and window must be positive.")
 
     redis_url = os.getenv("REDIS_URL", "").strip()
+    if _is_production() and not redis_url.startswith("rediss://"):
+        raise HTTPException(
+            status_code=503,
+            detail="Production shared rate limiting requires a TLS-protected Redis URL (rediss://).",
+        )
     if not redis_url:
         if _is_production():
             raise HTTPException(
