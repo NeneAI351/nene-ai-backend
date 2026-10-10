@@ -44,7 +44,10 @@ def _redis_client(url: str) -> Redis:
 
 
 def _is_production() -> bool:
-    return os.getenv("NENE_ENV", "development").strip().lower() == "production"
+    configured = os.getenv("NENE_ENV", "").strip().lower()
+    if configured:
+        return configured == "production"
+    return bool(os.getenv("RENDER_SERVICE_ID") or os.getenv("K_SERVICE") or os.getenv("FLY_APP_NAME"))
 
 
 def _client_fingerprint(request: Request) -> str:
