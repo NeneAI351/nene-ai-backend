@@ -32,6 +32,14 @@ logger = logging.getLogger("nene-ai")
 app = FastAPI(title="NENE AI Backend", version="0.13.0-scale-security-foundation")
 
 
+def _is_production_environment() -> bool:
+    configured = os.getenv("NENE_ENV", "").strip().lower()
+    if configured:
+        return configured == "production"
+    # Hosted deployments must not silently inherit development-only defaults.
+    return bool(os.getenv("RENDER_SERVICE_ID") or os.getenv("K_SERVICE") or os.getenv("FLY_APP_NAME"))
+
+
 def _cors_origins() -> list[str]:
     configured = [
         origin.strip().rstrip("/")
@@ -42,7 +50,7 @@ def _cors_origins() -> list[str]:
         return configured
     # Development convenience only. Production must explicitly list the real
     # NENE AI web origins; native clients do not depend on browser CORS.
-    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+    if _is_production_environment():
         return []
     return ["*"]
 
@@ -160,7 +168,7 @@ def health():
         "version": "0.13.0-scale-security-foundation",
         "auth_configured": bool(os.getenv("AUTH_JWKS_URL", "").strip() and os.getenv("AUTH_ISSUER", "").strip()),
         "shared_rate_limit_configured": bool(os.getenv("REDIS_URL", "").strip() and os.getenv("RATE_LIMIT_HMAC_SECRET", "").strip()),
-        "environment": os.getenv("NENE_ENV", "development").strip().lower(),
+        "environment": "production" if _is_production_environment() else os.getenv("NENE_ENV", "development").strip().lower(),
         "database_configured": database_configured(),
         "provider": configured[0] if configured else "none",
         "providers": configured,
