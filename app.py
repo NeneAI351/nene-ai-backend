@@ -474,6 +474,23 @@ def _validate_public_media_url(url: str):
     hostname = parsed.hostname.rstrip(".").lower()
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
         raise HTTPException(status_code=400, detail="Private/local media URLs are not allowed.")
+
+    if os.getenv("NENE_ENV", "development").strip().lower() == "production":
+        allowed_hosts = {
+            item.strip().lower().rstrip(".")
+            for item in os.getenv("ALLOWED_MEDIA_HOSTS", "").split(",")
+            if item.strip()
+        }
+        if not allowed_hosts:
+            raise HTTPException(
+                status_code=503,
+                detail="Public media host allowlist is not configured.",
+            )
+        if not any(hostname == allowed or hostname.endswith("." + allowed) for allowed in allowed_hosts):
+            raise HTTPException(
+                status_code=400,
+                detail="This media host is not on NENE AI's approved provider allowlist.",
+            )
     try:
         addresses = {info[4][0] for info in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)}
     except OSError:
