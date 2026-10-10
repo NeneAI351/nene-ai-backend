@@ -5,16 +5,15 @@ Never accept user_id from an unauthenticated browser request.
 """
 from __future__ import annotations
 
-import json
-import uuid
-from decimal import Decimal, ROUND_CEILING
+from decimal import Decimal
+from uuid import UUID
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from database import database_configured
-from wallet_store import wallet_balance, wallet_ledger, wallet_reserve, wallet_release, wallet_capture, wallet_grant
+from wallet_store import wallet_balance, wallet_ledger, wallet_reserve, wallet_release, wallet_capture
 
 router = APIRouter(prefix="/api/wallet", tags=["wallet"])
 
@@ -37,7 +36,7 @@ def authenticated_user_id(request: Request) -> str:
 
 class ReserveRequest(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
-    generation_id: str
+    generation_id: UUID
     idempotency_key: str = Field(min_length=8, max_length=200)
 
 
@@ -79,7 +78,7 @@ async def reserve_wallet_credits(req: ReserveRequest, user_id: str = Depends(aut
     if not database_configured():
         raise HTTPException(status_code=503, detail="NENE AI database is not configured.")
     try:
-        result = await wallet_reserve(user_id, req.amount, req.generation_id, req.idempotency_key)
+        result = await wallet_reserve(user_id, req.amount, str(req.generation_id), req.idempotency_key)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     if result is None:
