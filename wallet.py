@@ -48,7 +48,7 @@ class GrantRequest(BaseModel):
 
 class SettleRequest(BaseModel):
     amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
-    generation_id: str
+    generation_id: UUID
     idempotency_key: str = Field(min_length=8, max_length=200)
 
 
@@ -91,7 +91,7 @@ async def release_wallet_credits(req: SettleRequest, user_id: str = Depends(auth
     if not database_configured():
         raise HTTPException(status_code=503, detail="NENE AI database is not configured.")
     try:
-        return await wallet_release(user_id, req.amount, req.generation_id, req.idempotency_key)
+        return await wallet_release(user_id, req.amount, str(req.generation_id), req.idempotency_key)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
@@ -101,6 +101,6 @@ async def capture_wallet_credits(req: SettleRequest, user_id: str = Depends(auth
     if not database_configured():
         raise HTTPException(status_code=503, detail="NENE AI database is not configured.")
     try:
-        return await wallet_capture(user_id, req.amount, req.generation_id, req.idempotency_key)
+        return await wallet_capture(user_id, req.amount, str(req.generation_id), req.idempotency_key)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
