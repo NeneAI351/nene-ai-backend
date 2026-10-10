@@ -314,6 +314,8 @@ async def magic_hour_upload_image(image_url: str) -> str:
 
     async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
         source = await client.get(image_url)
+        if 300 <= source.status_code < 400:
+            raise HTTPException(status_code=400, detail="Redirected image URLs are not allowed. Supply the final public image URL.")
         if source.status_code >= 400:
             raise HTTPException(status_code=400, detail="Magic Hour could not download the source image.")
         raw = source.content
