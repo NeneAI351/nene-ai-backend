@@ -114,6 +114,17 @@ CREATE TABLE IF NOT EXISTS wallets (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS wallet_reservations (
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  generation_id UUID NOT NULL REFERENCES generations(id) ON DELETE CASCADE,
+  reserved_remaining NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (reserved_remaining >= 0),
+  total_reserved NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (total_reserved >= 0),
+  total_captured NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (total_captured >= 0),
+  total_released NUMERIC(14,2) NOT NULL DEFAULT 0 CHECK (total_released >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY(user_id, generation_id)
+);
+
 CREATE TABLE IF NOT EXISTS wallet_operations (
   id UUID PRIMARY KEY,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
