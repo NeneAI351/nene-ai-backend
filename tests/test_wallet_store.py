@@ -32,7 +32,6 @@ async def postgres_database():
 
 async def create_test_user_and_generation():
     user_id = str(uuid.uuid4())
-    generation_id = str(uuid.uuid4())
     async with database._pool.connection() as conn:
         async with conn.transaction():
             await conn.execute(
@@ -40,16 +39,23 @@ async def create_test_user_and_generation():
                 (user_id, f"wallet-test-{user_id}@example.invalid"),
             )
             await conn.execute(
+                "INSERT INTO wallets(user_id,available_credits) VALUES (%s,100)",
+                (user_id,),
+            )
+    return user_id, await create_test_generation()
+
+
+async def create_test_generation():
+    generation_id = str(uuid.uuid4())
+    async with database._pool.connection() as conn:
+        async with conn.transaction():
+            await conn.execute(
                 """INSERT INTO generations
                    (id,provider,generation_type,status,request)
                    VALUES (%s,'test','text-to-video','queued','{}'::jsonb)""",
                 (generation_id,),
             )
-            await conn.execute(
-                "INSERT INTO wallets(user_id,available_credits) VALUES (%s,100)",
-                (user_id,),
-            )
-    return user_id, generation_id
+    return generation_id
 
 
 async def test_reserve_capture_release_and_idempotency(postgres_database):
@@ -81,7 +87,7 @@ async def test_reserve_capture_release_and_idempotency(postgres_database):
 
 async def test_rejects_overspend_and_cross_generation_settlement(postgres_database):
     user_id, generation_a = await create_test_user_and_generation()
-    _, generation_b = await create_test_user_and_generation()
+    generation_b = await create_test_generation()
 
     insufficient = await wallet_reserve(user_id, Decimal("101"), generation_a, "reserve-test-0002")
     assert insufficient is None
@@ -100,15 +106,7 @@ async def test_concurrent_reservations_cannot_overspend(postgres_database):
             await conn.execute(
                 "UPDATE wallets SET available_credits=100 WHERE user_id=%s", (user_id,)
             )
-    generation_b = str(uuid.uuid4())
-    async with database._pool.connection() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                """INSERT INTO generations
-                   (id,provider,generation_type,status,request)
-                   VALUES (%s,'test','text-to-video','queued','{}'::jsonb)""",
-                (generation_b,),
-            )
+    generation_b = await create_test_generation()
 
     results = await asyncio.gather(
         wallet_reserve(user_id, Decimal("80"), generation_a, "reserve-concurrent-a"),
