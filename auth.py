@@ -10,6 +10,7 @@ import asyncio
 import os
 import uuid
 from functools import lru_cache
+from urllib.parse import urlparse
 
 import jwt
 from fastapi import HTTPException, Request
@@ -46,6 +47,18 @@ async def get_authenticated_user_id(request: Request) -> str:
         raise HTTPException(
             status_code=503,
             detail="Verified authentication is not configured on NENE AI yet.",
+        )
+    jwks_parsed = urlparse(jwks_url)
+    issuer_parsed = urlparse(issuer)
+    if (
+        jwks_parsed.scheme != "https"
+        or not jwks_parsed.hostname
+        or issuer_parsed.scheme != "https"
+        or not issuer_parsed.hostname
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication JWKS URL and issuer must use HTTPS.",
         )
 
     try:
