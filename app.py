@@ -15,18 +15,73 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from database import (database_configured, start_database, close_database, initialize_schema, get_idempotency as db_get_idempotency, create_idempotency as db_create_idempotency, complete_idempotency as db_complete_idempotency, delete_idempotency as db_delete_idempotency)
 from pricing import quote as pricing_quote, catalog as pricing_catalog
+from wallet import router as wallet_router
+from wallet_store import initialize_wallet_schema
+from rate_limits import enforce_rate_limit, close_rate_limit_client
+from auth import get_authenticated_user_id
+from readiness import router as readiness_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.10.0-commercial-pricing-foundation")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="NENE AI Backend", version="0.13.0-scale-security-foundation")
+
+
+def _is_production_environment() -> bool:
+    configured = os.getenv("NENE_ENV", "").strip().lower()
+    if configured:
+        return configured == "production"
+    # Hosted deployments must not silently inherit development-only defaults.
+    return bool(os.getenv("RENDER_SERVICE_ID") or os.getenv("K_SERVICE") or os.getenv("FLY_APP_NAME"))
+
+
+def _cors_origins() -> list[str]:
+    configured = [
+        origin.strip().rstrip("/")
+        for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if configured:
+        return configured
+    # Development convenience only. Production must explicitly list the real
+    # NENE AI web origins; native clients do not depend on browser CORS.
+    if _is_production_environment():
+        return []
+    return ["*"]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+)
+
+
+@app.middleware("http")
+async def security_response_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.path.startswith("/api/") and not (
+        request.url.path.startswith("/api/story-videos/")
+        or request.url.path.startswith("/api/temp-images/")
+    ):
+        response.headers.setdefault("Cache-Control", "no-store")
+    if _is_production_environment():
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return response
+app.include_router(wallet_router)
+app.include_router(readiness_router)
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
 PIXAZO_API_KEY = os.getenv("PIXAZO_API_KEY", "").strip()
@@ -50,11 +105,13 @@ async def _startup_database():
     if database_configured():
         await start_database()
         await initialize_schema()
-        logger.info("NENE AI PostgreSQL database initialized.")
+        await initialize_wallet_schema()
+        logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
 async def _shutdown_database():
     await close_database()
+    await close_rate_limit_client()
 
 def _trim_idempotency_registry():
     if len(GENERATION_IDEMPOTENCY) <= GENERATION_IDEMPOTENCY_MAX:
@@ -110,7 +167,10 @@ def health():
     return {
         "ok": True,
         "service": "nene-ai-backend",
-        "version": "0.9.0-postgres-foundation",
+        "version": "0.13.0-scale-security-foundation",
+        "auth_configured": bool(os.getenv("AUTH_JWKS_URL", "").strip() and os.getenv("AUTH_ISSUER", "").strip()),
+        "shared_rate_limit_configured": bool(os.getenv("REDIS_URL", "").strip() and os.getenv("RATE_LIMIT_HMAC_SECRET", "").strip()),
+        "environment": "production" if _is_production_environment() else os.getenv("NENE_ENV", "development").strip().lower(),
         "database_configured": database_configured(),
         "provider": configured[0] if configured else "none",
         "providers": configured,
@@ -158,7 +218,10 @@ def pricing_quote_endpoint(req: PricingQuoteRequest):
 
 
 @app.post("/api/image-upload")
-async def image_upload(req: ImageUploadRequest):
+async def image_upload(req: ImageUploadRequest, request: Request):
+    await enforce_rate_limit(request, bucket="image-upload", limit=10, window_seconds=60)
+    if _is_production_environment():
+        await get_authenticated_user_id(request)
     _cleanup_story_storage()
     """Accept supported browser image data URIs and normalize the file type safely.
 
@@ -257,9 +320,12 @@ def magic_hour_resolution(value: str) -> str:
 async def magic_hour_upload_image(image_url: str) -> str:
     if not image_url or not image_url.startswith("http"):
         raise HTTPException(status_code=400, detail="Magic Hour image-to-video requires an image URL.")
+    _validate_public_media_url(image_url)
 
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
         source = await client.get(image_url)
+        if 300 <= source.status_code < 400:
+            raise HTTPException(status_code=400, detail="Redirected image URLs are not allowed. Supply the final public image URL.")
         if source.status_code >= 400:
             raise HTTPException(status_code=400, detail="Magic Hour could not download the source image.")
         raw = source.content
@@ -460,6 +526,23 @@ def _validate_public_media_url(url: str):
     hostname = parsed.hostname.rstrip(".").lower()
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
         raise HTTPException(status_code=400, detail="Private/local media URLs are not allowed.")
+
+    if _is_production_environment():
+        allowed_hosts = {
+            item.strip().lower().rstrip(".")
+            for item in os.getenv("ALLOWED_MEDIA_HOSTS", "").split(",")
+            if item.strip()
+        }
+        if not allowed_hosts:
+            raise HTTPException(
+                status_code=503,
+                detail="Public media host allowlist is not configured.",
+            )
+        if not any(hostname == allowed or hostname.endswith("." + allowed) for allowed in allowed_hosts):
+            raise HTTPException(
+                status_code=400,
+                detail="This media host is not on NENE AI's approved provider allowlist.",
+            )
     try:
         addresses = {info[4][0] for info in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)}
     except OSError:
@@ -475,7 +558,9 @@ async def _download_story_clip(client: httpx.AsyncClient, url: str, destination:
         raise HTTPException(status_code=400, detail="Story scene URLs must be public HTTP(S) URLs.")
     _validate_public_media_url(url)
     try:
-        async with client.stream("GET", url, follow_redirects=True) as response:
+        async with client.stream("GET", url, follow_redirects=False) as response:
+            if 300 <= response.status_code < 400:
+                raise HTTPException(status_code=400, detail="Redirected media URLs are not allowed. Supply the final public media URL.")
             if response.status_code >= 400:
                 raise HTTPException(status_code=400, detail=f"Could not download story scene: HTTP {response.status_code}.")
             content_length = response.headers.get("content-length")
@@ -519,7 +604,10 @@ def _run_ffmpeg(args: list[str], timeout: int = 300):
 
 
 @app.post("/api/story/assemble")
-async def assemble_story(req: StoryAssembleRequest):
+async def assemble_story(req: StoryAssembleRequest, request: Request):
+    await enforce_rate_limit(request, bucket="story-assemble", limit=3, window_seconds=60)
+    if _is_production_environment():
+        await get_authenticated_user_id(request)
     _cleanup_story_storage()
     urls = [str(url).strip() for url in (req.scene_urls or []) if str(url).strip()]
     if not urls:
@@ -627,7 +715,11 @@ async def _generate_uncached(req: GenerateRequest, kind: str):
 
 
 @app.post("/api/generate")
-async def generate(req: GenerateRequest, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
+async def generate(req: GenerateRequest, request: Request, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
+    await enforce_rate_limit(request, bucket="generate", limit=5, window_seconds=60)
+    if _is_production_environment():
+        await get_authenticated_user_id(request)
+        raise HTTPException(status_code=503, detail="Production video generation is disabled until server-side credit reservations, generation ownership, and durable job recovery are integrated.")
     kind = req.type.lower().strip()
     if kind not in {"text-to-video", "image-to-video"}:
         raise HTTPException(status_code=400, detail="Supported types: text-to-video, image-to-video")
@@ -716,6 +808,8 @@ async def generate(req: GenerateRequest, idempotency_key: Optional[str] = Header
 
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
+    if _is_production_environment():
+        raise HTTPException(status_code=503, detail="Production job polling is disabled until authenticated generation ownership is enforced.")
     kind = mode if mode in {"text-to-video", "image-to-video"} else "text-to-video"
     active = (provider or "").lower().strip()
 
