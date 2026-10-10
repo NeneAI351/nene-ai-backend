@@ -1,4 +1,9 @@
 from types import SimpleNamespace
+import time
+import uuid
+
+import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 import pytest
 from fastapi import HTTPException
@@ -73,3 +78,69 @@ async def test_invalid_signed_token_is_rejected(monkeypatch):
         await auth.get_authenticated_user_id(request)
 
     assert error.value.status_code == 401
+
+@pytest.mark.asyncio
+async def test_valid_signed_token_resolves_internal_user(monkeypatch):
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_key = private_key.public_key()
+    user_id = str(uuid.uuid4())
+    issuer = "https://identity.example.invalid/"
+    monkeypatch.setenv("AUTH_JWKS_URL", "https://identity.example.invalid/jwks")
+    monkeypatch.setenv("AUTH_ISSUER", issuer)
+    monkeypatch.setenv("AUTH_AUDIENCE", "authenticated")
+
+    token = jwt.encode(
+        {
+            "sub": user_id,
+            "iss": issuer,
+            "aud": "authenticated",
+            "exp": int(time.time()) + 300,
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": "test-key"},
+    )
+
+    class FakeClient:
+        def get_signing_key_from_jwt(self, supplied_token):
+            assert supplied_token == token
+            return SimpleNamespace(key=public_key)
+
+    class FakeResult:
+        async def fetchone(self):
+            return {"status": "active"}
+
+    class FakeTransaction:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeConnection:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def transaction(self):
+            return FakeTransaction()
+
+        async def execute(self, query, params=()):
+            return FakeResult()
+
+    class FakePool:
+        def connection(self):
+            return FakeConnection()
+
+    monkeypatch.setattr(auth, "_jwks_client", lambda url: FakeClient())
+    monkeypatch.setattr(auth.database, "database_configured", lambda: True)
+    monkeypatch.setattr(auth.database, "_pool", FakePool())
+
+    request = make_request({"Authorization": f"Bearer {token}"})
+    resolved_user_id = await auth.get_authenticated_user_id(request)
+
+    assert resolved_user_id == user_id
+    assert request.state.user_id == user_id
+\n
