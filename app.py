@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -24,6 +24,7 @@ from database import (database_configured, start_database, close_database, initi
 from pricing import quote as pricing_quote, catalog as pricing_catalog
 from wallet import router as wallet_router
 from wallet_store import initialize_wallet_schema
+from rate_limits import enforce_rate_limit, close_rate_limit_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
@@ -59,6 +60,7 @@ async def _startup_database():
 @app.on_event("shutdown")
 async def _shutdown_database():
     await close_database()
+    await close_rate_limit_client()
 
 def _trim_idempotency_registry():
     if len(GENERATION_IDEMPOTENCY) <= GENERATION_IDEMPOTENCY_MAX:
@@ -116,6 +118,8 @@ def health():
         "service": "nene-ai-backend",
         "version": "0.12.0-auth-wallet-foundation",
         "auth_configured": bool(os.getenv("AUTH_JWKS_URL", "").strip() and os.getenv("AUTH_ISSUER", "").strip()),
+        "shared_rate_limit_configured": bool(os.getenv("REDIS_URL", "").strip() and os.getenv("RATE_LIMIT_HMAC_SECRET", "").strip()),
+        "environment": os.getenv("NENE_ENV", "development").strip().lower(),
         "database_configured": database_configured(),
         "provider": configured[0] if configured else "none",
         "providers": configured,
@@ -163,7 +167,8 @@ def pricing_quote_endpoint(req: PricingQuoteRequest):
 
 
 @app.post("/api/image-upload")
-async def image_upload(req: ImageUploadRequest):
+async def image_upload(req: ImageUploadRequest, request: Request):
+    await enforce_rate_limit(request, bucket="image-upload", limit=10, window_seconds=60)
     _cleanup_story_storage()
     """Accept supported browser image data URIs and normalize the file type safely.
 
@@ -524,7 +529,8 @@ def _run_ffmpeg(args: list[str], timeout: int = 300):
 
 
 @app.post("/api/story/assemble")
-async def assemble_story(req: StoryAssembleRequest):
+async def assemble_story(req: StoryAssembleRequest, request: Request):
+    await enforce_rate_limit(request, bucket="story-assemble", limit=3, window_seconds=60)
     _cleanup_story_storage()
     urls = [str(url).strip() for url in (req.scene_urls or []) if str(url).strip()]
     if not urls:
@@ -632,7 +638,8 @@ async def _generate_uncached(req: GenerateRequest, kind: str):
 
 
 @app.post("/api/generate")
-async def generate(req: GenerateRequest, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
+async def generate(req: GenerateRequest, request: Request, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
+    await enforce_rate_limit(request, bucket="generate", limit=5, window_seconds=60)
     kind = req.type.lower().strip()
     if kind not in {"text-to-video", "image-to-video"}:
         raise HTTPException(status_code=400, detail="Supported types: text-to-video, image-to-video")
