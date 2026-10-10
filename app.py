@@ -22,11 +22,14 @@ from pydantic import BaseModel, Field
 
 from database import (database_configured, start_database, close_database, initialize_schema, get_idempotency as db_get_idempotency, create_idempotency as db_create_idempotency, complete_idempotency as db_complete_idempotency, delete_idempotency as db_delete_idempotency)
 from pricing import quote as pricing_quote, catalog as pricing_catalog
+from wallet import router as wallet_router
+from wallet_store import initialize_wallet_schema
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.10.0-commercial-pricing-foundation")
+app = FastAPI(title="NENE AI Backend", version="0.11.0-commercial-wallet-foundation")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+app.include_router(wallet_router)
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
 PIXAZO_API_KEY = os.getenv("PIXAZO_API_KEY", "").strip()
@@ -50,7 +53,8 @@ async def _startup_database():
     if database_configured():
         await start_database()
         await initialize_schema()
-        logger.info("NENE AI PostgreSQL database initialized.")
+        await initialize_wallet_schema()
+        logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
 async def _shutdown_database():
