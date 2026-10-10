@@ -22,7 +22,7 @@ import database
 
 @lru_cache(maxsize=8)
 def _jwks_client(url: str) -> PyJWKClient:
-    return PyJWKClient(url, cache_keys=True, lifespan=300)
+    return PyJWKClient(url, cache_keys=True, lifespan=300, timeout=5)
 
 
 async def get_authenticated_user_id(request: Request) -> str:
