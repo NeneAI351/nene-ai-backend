@@ -9,29 +9,14 @@ from decimal import Decimal
 from uuid import UUID
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from database import database_configured
+from auth import get_authenticated_user_id as authenticated_user_id
 from wallet_store import wallet_balance, wallet_ledger, wallet_reserve, wallet_release, wallet_capture
 
 router = APIRouter(prefix="/api/wallet", tags=["wallet"])
-
-
-def authenticated_user_id(request: Request) -> str:
-    """Fail closed until NENE's verified authentication middleware is installed.
-
-    This deliberately does not trust user IDs supplied in headers, query strings,
-    or request bodies. A future auth dependency must set request.state.user_id
-    after validating a signed session/token.
-    """
-    user_id = getattr(request.state, "user_id", None)
-    if not user_id:
-        raise HTTPException(
-            status_code=503,
-            detail="Wallet endpoints are disabled until verified NENE AI authentication is configured.",
-        )
-    return str(user_id)
 
 
 class ReserveRequest(BaseModel):
