@@ -27,7 +27,7 @@ from wallet_store import initialize_wallet_schema
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.11.0-commercial-wallet-foundation")
+app = FastAPI(title="NENE AI Backend", version="0.12.0-auth-wallet-foundation")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 app.include_router(wallet_router)
 
@@ -114,7 +114,8 @@ def health():
     return {
         "ok": True,
         "service": "nene-ai-backend",
-        "version": "0.11.0-commercial-wallet-foundation",
+        "version": "0.12.0-auth-wallet-foundation",
+        "auth_configured": bool(os.getenv("AUTH_JWKS_URL", "").strip() and os.getenv("AUTH_ISSUER", "").strip()),
         "database_configured": database_configured(),
         "provider": configured[0] if configured else "none",
         "providers": configured,
