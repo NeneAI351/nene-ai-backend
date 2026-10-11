@@ -38,6 +38,14 @@ Configure these only in the worker/API secret manager; never commit credentials:
 
 Keep the bucket private, block public access, enforce TLS, use server-side encryption, and configure lifecycle/retention/deletion rules. Signed download URLs expire after five minutes. The API endpoint checks authenticated ownership and successful completion before signing. Do not put signed URLs in logs, analytics, database records, or long-lived frontend state. Provider redirects are intentionally rejected.
 
+### Staging storage smoke test
+
+Run only against a dedicated staging bucket with staging credentials. Do not set `NENE_ENV=production`:
+```bash
+python scripts/media_storage_smoke_test.py
+```
+This test uploads a tiny synthetic MP4-signature fixture, obtains a five-minute signed GET URL, verifies downloaded bytes, and deletes the temporary object. It does not call the video provider or incur generation charges. A passing round trip verifies connectivity and signed delivery only; an operator must separately verify that public bucket access is blocked, the bucket policy is least-privilege, encryption is enabled, and lifecycle/retention is configured. Do not paste credentials or signed URLs into issues or logs.
+
 ## Required request lifecycle
 
 1. Authenticate the caller and derive the user ID from the verified token.
