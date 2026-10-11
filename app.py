@@ -27,6 +27,7 @@ from wallet_store import initialize_wallet_schema
 from rate_limits import enforce_rate_limit, close_rate_limit_client
 from auth import get_authenticated_user_id
 from readiness import router as readiness_router
+from projects import router as projects_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
@@ -82,6 +83,7 @@ async def security_response_headers(request: Request, call_next):
     return response
 app.include_router(wallet_router)
 app.include_router(readiness_router)
+app.include_router(projects_router)
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
 PIXAZO_API_KEY = os.getenv("PIXAZO_API_KEY", "").strip()
