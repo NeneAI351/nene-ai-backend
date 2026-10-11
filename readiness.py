@@ -41,6 +41,19 @@ def readiness_snapshot(*, production=None, database_ready=None):
         and len(rate_limit_secret.encode("utf-8")) >= 32
     )
 
+    # Durable generation currently dispatches through LTX. Provider result
+    # URLs must also be constrained to an explicit host allowlist in production.
+    allowed_media_hosts = [
+        host.strip().lower().rstrip(".")
+        for host in os.getenv("ALLOWED_MEDIA_HOSTS", "").split(",")
+        if host.strip()
+    ]
+    ltx_provider_ready = bool(
+        os.getenv("LTX_API_KEY", "").strip()
+        and allowed_media_hosts
+        and all(host != "*" for host in allowed_media_hosts)
+    )
+
     # The current NENE staging design uses an explicit S3-compatible endpoint
     # (Supabase Storage). Do not report production readiness when any required
     # storage setting is absent or the endpoint is not HTTPS.
@@ -61,6 +74,7 @@ def readiness_snapshot(*, production=None, database_ready=None):
         "database_configured": bool(database_ready),
         "authentication_configured": auth_ready,
         "shared_rate_limits_configured": rate_limits_ready,
+        "ltx_provider_configured": ltx_provider_ready,
         "private_media_storage_configured": media_storage_ready,
     }
     ready = all(checks.values()) if production else True
