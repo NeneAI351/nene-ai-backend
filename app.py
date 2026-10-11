@@ -30,6 +30,8 @@ from readiness import router as readiness_router
 from projects import router as projects_router
 from characters import router as characters_router
 import generation_store
+import generation_service
+from generation_service import GenerationRequestConflict, InsufficientCredits
 from generation_outbox import initialize_outbox_schema
 
 logging.basicConfig(level=logging.INFO)
@@ -812,6 +814,70 @@ async def generate(req: GenerateRequest, request: Request, idempotency_key: Opti
             # generation into an apparent failure that could cause a retry.
             logger.exception("Generation completed but durable idempotency could not be saved.")
     return response
+
+class CreateGenerationRequest(BaseModel):
+    type: str = "text-to-video"
+    prompt: str
+    provider: str
+    model: str = "ltx-2-5-fast"
+    resolution: str = "720p"
+    duration: int = 6
+    project_id: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    image_url: Optional[str] = None
+
+
+@app.post("/api/generations", status_code=202)
+async def create_generation_endpoint(
+    req: CreateGenerationRequest,
+    request: Request,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
+    """Queue a generation after server-side pricing and atomic credit reservation."""
+    await enforce_rate_limit(request, bucket="generation-create", limit=8, window_seconds=60)
+    user_id = await get_authenticated_user_id(request)
+    if not database_configured():
+        raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
+    if req.type not in {"text-to-video", "image-to-video"}:
+        raise HTTPException(status_code=400, detail="Unsupported generation type.")
+    if req.type == "image-to-video":
+        if not req.image_url:
+            raise HTTPException(status_code=400, detail="Image-to-video requires an image URL.")
+        try:
+            _validate_public_media_url(req.image_url)
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid source image URL.")
+    try:
+        result = await generation_service.create_reserved_generation(
+            user_id,
+            idempotency_key or "",
+            prompt=req.prompt,
+            provider=(req.provider or "").strip().lower(),
+            model=req.model,
+            resolution=req.resolution,
+            duration_seconds=req.duration,
+            generation_type=req.type,
+            project_id=req.project_id,
+            aspect_ratio=req.aspect_ratio,
+            image_url=req.image_url,
+        )
+        return result
+    except InsufficientCredits as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+    except GenerationRequestConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=400, detail="No active cost rate is configured for this provider/model/resolution.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError:
+        logger.exception("Durable generation creation failed")
+        raise HTTPException(status_code=503, detail="Generation queue is temporarily unavailable.")
+
 
 @app.get("/api/generations/{generation_id}")
 async def get_generation(generation_id: str, request: Request):
