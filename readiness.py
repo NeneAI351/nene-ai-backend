@@ -1,5 +1,6 @@
 """Production readiness checks that expose configuration state, never secrets."""
 import os
+import re
 from urllib.parse import urlparse
 
 from fastapi import APIRouter
@@ -8,6 +9,15 @@ from fastapi.responses import JSONResponse
 from database import database_configured
 
 router = APIRouter()
+_DNS_HOST_RE = re.compile(
+    r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\Z"
+)
+
+
+def _valid_media_host_allowlist(raw: str) -> bool:
+    """Accept explicit DNS hostnames only; reject wildcard/URL/path entries."""
+    hosts = [item.strip().lower().rstrip(".") for item in raw.split(",") if item.strip()]
+    return bool(hosts) and all(_DNS_HOST_RE.fullmatch(host) for host in hosts)
 
 
 def readiness_snapshot(*, production=None, database_ready=None):
@@ -42,21 +52,15 @@ def readiness_snapshot(*, production=None, database_ready=None):
     )
 
     # Durable generation currently dispatches through LTX. Provider result
-    # URLs must also be constrained to an explicit host allowlist in production.
-    allowed_media_hosts = [
-        host.strip().lower().rstrip(".")
-        for host in os.getenv("ALLOWED_MEDIA_HOSTS", "").split(",")
-        if host.strip()
-    ]
+    # URLs must be constrained to explicit DNS hosts, never wildcard patterns.
+    allowed_media_hosts = os.getenv("ALLOWED_MEDIA_HOSTS", "")
     ltx_provider_ready = bool(
         os.getenv("LTX_API_KEY", "").strip()
-        and allowed_media_hosts
-        and all(host != "*" for host in allowed_media_hosts)
+        and _valid_media_host_allowlist(allowed_media_hosts)
     )
 
     # The current NENE staging design uses an explicit S3-compatible endpoint
-    # (Supabase Storage). Do not report production readiness when any required
-    # storage setting is absent or the endpoint is not HTTPS.
+    # (Supabase Storage). This checks configuration only, not connectivity.
     media_endpoint = os.getenv("NENE_MEDIA_ENDPOINT", "").strip()
     parsed_endpoint = urlparse(media_endpoint)
     media_storage_ready = bool(
@@ -79,7 +83,6 @@ def readiness_snapshot(*, production=None, database_ready=None):
     }
     ready = all(checks.values()) if production else True
 
-    # Preserve staging as its own reported mode.
     if production:
         mode = "production"
     elif configured_env == "staging":
@@ -87,11 +90,7 @@ def readiness_snapshot(*, production=None, database_ready=None):
     else:
         mode = "development"
 
-    return {
-        "ready": ready,
-        "mode": mode,
-        "checks": checks,
-    }
+    return {"ready": ready, "mode": mode, "checks": checks}
 
 
 @router.get("/api/ready")
