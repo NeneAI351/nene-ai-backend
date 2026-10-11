@@ -1,9 +1,9 @@
-"""Run a controlled S3-compatible media storage round-trip smoke test.
+"""Run a controlled S3-compatible private-media round-trip smoke test.
 
 Requires staging-only NENE_MEDIA_* credentials and a dedicated private test bucket.
-The script uploads a tiny synthetic MP4-signature fixture, downloads it using a
-five-minute signed URL, compares bytes, and deletes the object even on failure.
-It does not call LTX or incur video-generation charges.
+The script verifies both generated-video and source-image object prefixes, signed
+GET delivery, byte equality, and cleanup. It never calls LTX or incurs generation
+charges. Fixtures validate storage transport/signatures only, not media decoding.
 """
 from __future__ import annotations
 
@@ -16,44 +16,88 @@ import httpx
 import media_storage
 
 
+async def _signed_get_and_compare(http: httpx.AsyncClient, url: str, fixture: bytes, label: str) -> None:
+    response = await http.get(url)
+    if response.status_code != 200:
+        raise RuntimeError(f"{label} signed download failed with HTTP {response.status_code}.")
+    if response.content != fixture:
+        raise RuntimeError(f"{label} downloaded bytes differ from uploaded fixture.")
+
+
 async def main() -> None:
     if os.getenv("NENE_ENV", "").strip().lower() == "production" or any(
         os.getenv(name) for name in ("RENDER_SERVICE_ID", "K_SERVICE", "FLY_APP_NAME")
     ):
         raise SystemExit("Refusing to run storage smoke test in a detected hosted/production environment.")
     if os.getenv("NENE_MEDIA_SMOKE_TEST_CONFIRM") != "staging-only":
-        raise SystemExit("Set NENE_MEDIA_SMOKE_TEST_CONFIRM=staging-only after verifying these are staging credentials and a dedicated staging bucket.")
+        raise SystemExit(
+            "Set NENE_MEDIA_SMOKE_TEST_CONFIRM=staging-only after verifying these are staging credentials and a dedicated staging bucket."
+        )
+
     cfg = media_storage._storage_config()
     client = media_storage._client()
     generation_id = str(uuid.uuid4())
-    key = f"generations/{generation_id}/video.mp4"
-    # Minimal ISO BMFF signature fixture: tests storage transport, not playback.
-    fixture = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 24
-    uploaded = False
+    owner_id = str(uuid.uuid4())
+    asset_id = str(uuid.uuid4())
+    video_key = f"generations/{generation_id}/video.mp4"
+    video_fixture = b"\\x00\\x00\\x00\\x18ftypisom" + b"\\x00" * 24
+    # The production source-image validator checks file signatures. This synthetic
+    # fixture intentionally tests storage transport, not full PNG decoding.
+    image_fixture = b"\\x89PNG\\r\\n\\x1a\\n" + b"NENE-STAGING-SMOKE-TEST"
+    video_uploaded = False
+    source_key: str | None = None
     try:
         client.put_object(
             Bucket=cfg["bucket"],
-            Key=key,
-            Body=fixture,
-            ContentLength=len(fixture),
+            Key=video_key,
+            Body=video_fixture,
+            ContentLength=len(video_fixture),
             ContentType="video/mp4",
             CacheControl="private, no-store",
             Metadata={"generation-id": generation_id, "smoke-test": "true"},
         )
-        uploaded = True
-        url = media_storage.create_signed_download_url(key, 300)
-        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0), follow_redirects=False, trust_env=False) as http:
-            response = await http.get(url)
-        if response.status_code != 200:
-            raise RuntimeError(f"Signed download failed with HTTP {response.status_code}.")
-        if response.content != fixture:
-            raise RuntimeError("Downloaded bytes differ from uploaded fixture.")
-        print("PASS: staging object upload, five-minute signed GET, and byte-for-byte verification.")
-        print("NOTE: confirm bucket public-access block, policy, encryption, and retention in provider console.")
+        video_uploaded = True
+        source = media_storage.upload_source_image(image_fixture, owner_id, asset_id)
+        source_key = str(source["object_key"])
+
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0, connect=5.0),
+            follow_redirects=False,
+            trust_env=False,
+        ) as http:
+            await _signed_get_and_compare(
+                http,
+                media_storage.create_signed_download_url(video_key, 300),
+                video_fixture,
+                "Generated-video",
+            )
+            await _signed_get_and_compare(
+                http,
+                media_storage.create_signed_source_image_url(source_key, 300),
+                image_fixture,
+                "Source-image",
+            )
+
+        print("PASS: private generated-video upload and five-minute signed GET.")
+        print("PASS: private source-image upload and five-minute signed GET.")
+        print("PASS: both downloaded fixtures matched uploaded bytes.")
+        print("NOTE: verify bucket public-access block, least-privilege policy, encryption, and retention in provider console.")
     finally:
-        if uploaded:
-            client.delete_object(Bucket=cfg["bucket"], Key=key)
-            print("Temporary smoke-test object deleted.")
+        cleanup_errors: list[str] = []
+        if source_key:
+            try:
+                media_storage.delete_source_image(source_key)
+                print("Temporary source-image object deleted.")
+            except Exception as exc:
+                cleanup_errors.append(f"source-image cleanup failed ({type(exc).__name__})")
+        if video_uploaded:
+            try:
+                client.delete_object(Bucket=cfg["bucket"], Key=video_key)
+                print("Temporary generated-video object deleted.")
+            except Exception as exc:
+                cleanup_errors.append(f"generated-video cleanup failed ({type(exc).__name__})")
+        if cleanup_errors:
+            raise RuntimeError("; ".join(cleanup_errors))
 
 
 if __name__ == "__main__":
