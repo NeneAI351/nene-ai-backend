@@ -129,6 +129,21 @@ async def initialize_schema() -> None:
     CREATE INDEX IF NOT EXISTS idx_generations_user_updated ON generations(user_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_generations_provider_job ON generations(provider, provider_job_id);
 
+    -- Source images are private assets owned by a user. Generation requests
+    -- reference asset IDs; provider URLs are minted only by the worker at dispatch.
+    CREATE TABLE IF NOT EXISTS media_assets (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        asset_type TEXT NOT NULL CHECK (asset_type IN ('source_image')),
+        object_key TEXT NOT NULL UNIQUE,
+        content_type TEXT NOT NULL,
+        size_bytes BIGINT NOT NULL CHECK (size_bytes > 0),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        deleted_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_media_assets_owner_created
+        ON media_assets(user_id, created_at DESC) WHERE deleted_at IS NULL;
+
     CREATE TABLE IF NOT EXISTS credit_ledger (
         id UUID PRIMARY KEY,
         user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
