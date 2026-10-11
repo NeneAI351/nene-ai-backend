@@ -84,6 +84,13 @@ async def test_reserve_capture_release_and_idempotency(postgres_database):
     assert Decimal(balance["reserved_credits"]) == Decimal("0")
     assert Decimal(balance["lifetime_consumed"]) == Decimal("50")
 
+    generation = await database.fetch_one(
+        "SELECT credits_reserved, credits_charged FROM generations WHERE id=%s",
+        (generation_id,),
+    )
+    assert Decimal(generation["credits_reserved"]) == Decimal("70")
+    assert Decimal(generation["credits_charged"]) == Decimal("50")
+
 
 async def test_rejects_overspend_and_cross_generation_settlement(postgres_database):
     user_id, generation_a = await create_test_user_and_generation()
