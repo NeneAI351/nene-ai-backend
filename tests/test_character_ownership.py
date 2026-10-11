@@ -3,11 +3,15 @@ import os
 import uuid
 
 import httpx
+import pytest
 import pytest_asyncio
 
 import app
 import database
 from auth import get_authenticated_user_id
+
+
+pytestmark = pytest.mark.asyncio
 
 
 @pytest_asyncio.fixture(scope="session")
