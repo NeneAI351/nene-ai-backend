@@ -195,6 +195,23 @@ async def initialize_schema() -> None:
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
+    -- New production flow uses per-user idempotency keys. The legacy table
+    -- below remains for the prototype route and is not used for production billing.
+    CREATE TABLE IF NOT EXISTS generation_requests (
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        generation_id UUID REFERENCES generations(id) ON DELETE SET NULL,
+        state TEXT NOT NULL DEFAULT 'reserved'
+            CHECK (state IN ('reserved','accepted','failed')),
+        response JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, idempotency_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_generation_requests_created
+        ON generation_requests(created_at);
+    
     CREATE TABLE IF NOT EXISTS generation_idempotency (
         id UUID PRIMARY KEY,
         idempotency_key TEXT NOT NULL UNIQUE,
