@@ -108,3 +108,38 @@ def test_signed_source_image_url_rejects_video_and_arbitrary_keys():
         media_storage.create_signed_source_image_url("generations/00000000-0000-0000-0000-000000000000/video.mp4")
     with pytest.raises(ValueError):
         media_storage.create_signed_source_image_url("source-images/not-a-user/not-an-asset.jpg")
+
+
+def test_signed_source_image_url_rejects_invalid_expiry():
+    owner = "00000000-0000-4000-8000-000000000001"
+    asset = "00000000-0000-4000-8000-000000000002"
+    key = f"source-images/{owner}/{asset}.png"
+    for ttl in (0, 601, -1):
+        with pytest.raises(ValueError, match="expiry"):
+            media_storage.create_signed_source_image_url(key, ttl)
+
+
+def test_delete_source_image_rejects_keys_outside_source_prefix():
+    with pytest.raises(ValueError, match="Invalid source image object key"):
+        media_storage.delete_source_image("generations/00000000-0000-0000-0000-000000000001/video.mp4")
+    with pytest.raises(ValueError, match="Invalid source image object key"):
+        media_storage.delete_source_image("source-images/not-a-uuid/00000000-0000-0000-0000-000000000002.png")
+
+
+def test_delete_source_image_targets_only_validated_key(monkeypatch):
+    calls = []
+
+    class FakeS3:
+        def delete_object(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(media_storage, "_storage_config", lambda: {
+        "bucket": "nene-private-test", "region": "auto", "endpoint": "",
+        "access_key": "test-access", "secret_key": "test-secret",
+    })
+    monkeypatch.setattr(media_storage, "_client", lambda: FakeS3())
+    owner = "00000000-0000-4000-8000-000000000001"
+    asset = "00000000-0000-4000-8000-000000000002"
+    key = f"source-images/{owner}/{asset}.webp"
+    media_storage.delete_source_image(key)
+    assert calls == [{"Bucket": "nene-private-test", "Key": key}]
