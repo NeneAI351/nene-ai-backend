@@ -146,9 +146,9 @@ def validate_image_bytes(raw: bytes) -> tuple[str, str]:
     """Validate supported source-image signatures; never trust browser MIME labels."""
     if not raw or len(raw) > MAX_SOURCE_IMAGE_BYTES:
         raise ValueError("Source image size is outside the allowed range.")
-    if raw.startswith(b"\\xff\\xd8\\xff"):
+    if raw.startswith(b"\xff\xd8\xff"):
         return "image/jpeg", "jpg"
-    if raw.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png", "png"
     if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
         return "image/webp", "webp"
