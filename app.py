@@ -919,6 +919,47 @@ async def get_generation(generation_id: str, request: Request):
     }
 
 
+@app.get("/api/generations/{generation_id}/media-url")
+async def get_generation_media_url(generation_id: str, request: Request):
+    """Return a short-lived signed URL for a completed video owned by the caller.
+
+    The bucket stays private. Signed URLs are bearer credentials, so the TTL is
+    fixed and short; callers must not log or persist the returned URL.
+    """
+    await enforce_rate_limit(request, bucket="generation-media-url", limit=20, window_seconds=60)
+    user_id = await get_authenticated_user_id(request)
+    if not database_configured():
+        raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
+    try:
+        parsed_id = str(uuid.UUID(generation_id))
+        owner_id = str(uuid.UUID(user_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=404, detail="Generation not found.")
+    row = await database.fetch_one(
+        """SELECT result FROM generations
+           WHERE id=%s AND user_id=%s AND status='succeeded'""",
+        (parsed_id, owner_id),
+    )
+    result = row.get("result") if row else None
+    object_key = result.get("object_key") if isinstance(result, dict) else None
+    if not object_key:
+        # Identical response for unknown, non-owned, unfinished, and non-stored jobs.
+        raise HTTPException(status_code=404, detail="Completed media not found.")
+    try:
+        from media_storage import create_signed_download_url
+        signed_url = await asyncio.to_thread(create_signed_download_url, object_key, 300)
+    except Exception:
+        logger.exception("Private media signing failed for generation %s", parsed_id)
+        raise HTTPException(status_code=503, detail="Video delivery is temporarily unavailable.")
+    return {
+        "ok": True,
+        "generation_id": parsed_id,
+        "url": signed_url,
+        "expires_in": 300,
+        "content_type": "video/mp4",
+    }
+
+
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
     if _is_production_environment():
