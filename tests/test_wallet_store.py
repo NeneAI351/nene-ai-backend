@@ -7,6 +7,7 @@ import pytest
 import pytest_asyncio
 
 import database
+import generation_store
 from wallet_store import (
     initialize_wallet_schema,
     wallet_balance,
@@ -147,3 +148,38 @@ async def test_concurrent_reservations_cannot_overspend(postgres_database):
     balance = (await wallet_balance(user_id))["wallet"]
     assert Decimal(balance["available_credits"]) == Decimal("20")
     assert Decimal(balance["reserved_credits"]) == Decimal("80")
+
+
+
+async def test_generation_idempotency_is_user_scoped_and_fingerprint_bound(postgres_database):
+    user_a, generation_a = await create_test_user_and_generation()
+    user_b, generation_b = await create_test_user_and_generation()
+
+    first = await generation_store.claim_generation_idempotency(user_a, "same-key", "fingerprint-a")
+    assert first == {"claimed": True, "state": "reserved", "generation_id": None}
+
+    # The same literal key is allowed for a different user.
+    second_user = await generation_store.claim_generation_idempotency(user_b, "same-key", "fingerprint-b")
+    assert second_user["claimed"] is True
+
+    # Same owner/key and same fingerprint is a replay, not a second claim.
+    replay = await generation_store.claim_generation_idempotency(user_a, "same-key", "fingerprint-a")
+    assert replay["claimed"] is False
+    assert replay["state"] == "reserved"
+
+    with pytest.raises(generation_store.GenerationConflict, match="different request"):
+        await generation_store.claim_generation_idempotency(user_a, "same-key", "fingerprint-other")
+
+    await generation_store.bind_generation_idempotency(user_a, "same-key", "fingerprint-a", generation_a)
+    await generation_store.finish_generation_idempotency(
+        user_a, "same-key", generation_a, "accepted",
+        {"ok": True, "generation_id": generation_a},
+    )
+    completed = await generation_store.claim_generation_idempotency(user_a, "same-key", "fingerprint-a")
+    assert completed["claimed"] is False
+    assert completed["state"] == "accepted"
+    assert completed["generation_id"] == generation_a
+    assert completed["response"]["generation_id"] == generation_a
+
+    with pytest.raises(generation_store.GenerationConflict, match="another generation"):
+        await generation_store.bind_generation_idempotency(user_a, "same-key", "fingerprint-a", generation_b)
