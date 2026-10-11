@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS generation_outbox (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(generation_id, event_type)
 );
+ALTER TABLE generation_outbox ADD COLUMN IF NOT EXISTS lease_token UUID;
 CREATE INDEX IF NOT EXISTS idx_generation_outbox_claim
     ON generation_outbox(state, available_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_generation_outbox_lease
@@ -152,7 +153,7 @@ async def retry_event(
                 """UPDATE generation_outbox
                    SET state=CASE WHEN attempts >= %s THEN 'dead' ELSE 'pending' END,
                        available_at=NOW() + (%s * INTERVAL '1 second'),
-                       lease_owner=NULL, lease_expires_at=NULL,
+                       lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
                        last_error_code=%s, updated_at=NOW()
                    WHERE id=%s AND state='processing' AND lease_owner=%s AND lease_token=%s
                    RETURNING state""",
