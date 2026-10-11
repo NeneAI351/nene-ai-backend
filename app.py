@@ -834,6 +834,10 @@ async def create_generation_endpoint(
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     """Queue a generation after server-side pricing and atomic credit reservation."""
+    # Keep production closed until a supervised worker and provider reconciliation
+    # loop are deployed; otherwise queued jobs could hold credits indefinitely.
+    if _is_production_environment() and os.getenv("NENE_DURABLE_GENERATION_CREATE_ENABLED", "").strip().lower() != "true":
+        raise HTTPException(status_code=503, detail="Durable generation processing is not enabled yet.")
     await enforce_rate_limit(request, bucket="generation-create", limit=8, window_seconds=60)
     user_id = await get_authenticated_user_id(request)
     if not database_configured():
