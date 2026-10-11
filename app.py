@@ -277,6 +277,7 @@ async def image_upload(req: ImageUploadRequest, request: Request):
         # Production source images must never be exposed through /api/temp-images.
         # The worker mints a short-lived provider-fetch URL only at dispatch.
         asset_id = str(uuid.uuid4())
+        stored = None
         try:
             stored = await asyncio.to_thread(media_storage.upload_source_image, raw, user_id, asset_id)
             await database.execute(
@@ -286,6 +287,11 @@ async def image_upload(req: ImageUploadRequest, request: Request):
                 (asset_id, user_id, stored["object_key"], stored["content_type"], stored["size_bytes"]),
             )
         except Exception:
+            if stored and stored.get("object_key"):
+                try:
+                    await asyncio.to_thread(media_storage.delete_source_image, stored["object_key"])
+                except Exception:
+                    logger.exception("Could not clean up orphaned source image object.")
             logger.exception("Private source image could not be stored.")
             raise HTTPException(status_code=503, detail="Private source-image storage is temporarily unavailable.")
         return {
@@ -311,6 +317,10 @@ async def image_upload(req: ImageUploadRequest, request: Request):
 
 @app.get("/api/temp-images/{name}")
 async def temp_image(name: str):
+    # Public temporary source-image delivery is legacy-only and must never be
+    # available in production, even for old files left on ephemeral disk.
+    if _is_production_environment():
+        raise HTTPException(status_code=404, detail="Temporary image not found.")
     safe = Path(name).name
     path = TEMP_DIR / safe
     if not path.exists():
