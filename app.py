@@ -855,6 +855,7 @@ class CreateGenerationRequest(BaseModel):
     project_id: Optional[str] = None
     aspect_ratio: Optional[str] = None
     image_url: Optional[str] = None
+    source_image_id: Optional[str] = None
 
 
 @app.post("/api/generations", status_code=202)
@@ -875,14 +876,18 @@ async def create_generation_endpoint(
     if req.type not in {"text-to-video", "image-to-video"}:
         raise HTTPException(status_code=400, detail="Unsupported generation type.")
     if req.type == "image-to-video":
-        if not req.image_url:
-            raise HTTPException(status_code=400, detail="Image-to-video requires an image URL.")
-        try:
-            _validate_public_media_url(req.image_url)
-        except HTTPException:
-            raise
-        except Exception:
-            raise HTTPException(status_code=400, detail="Invalid source image URL.")
+        if _is_production_environment():
+            if not req.source_image_id or req.image_url:
+                raise HTTPException(status_code=400, detail="Image-to-video requires a private source_image_id; public image URLs are not accepted.")
+        elif not (req.source_image_id or req.image_url):
+            raise HTTPException(status_code=400, detail="Image-to-video requires a source image asset.")
+        if req.image_url:
+            try:
+                _validate_public_media_url(req.image_url)
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid source image URL.")
     try:
         result = await generation_service.create_reserved_generation(
             user_id,
@@ -896,6 +901,7 @@ async def create_generation_endpoint(
             project_id=req.project_id,
             aspect_ratio=req.aspect_ratio,
             image_url=req.image_url,
+            source_image_id=req.source_image_id,
         )
         return result
     except InsufficientCredits as exc:
