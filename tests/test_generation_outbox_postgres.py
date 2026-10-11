@@ -1,27 +1,23 @@
 """PostgreSQL integration coverage for outbox deduplication and lease fencing."""
-import asyncio
 import os
 import uuid
-from datetime import timedelta
 
 import pytest
+import pytest_asyncio
 
 import database
 import generation_outbox
 
 
-@pytest.fixture(scope="module", autouse=True)
-def postgres_outbox():
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def postgres_outbox():
     if not os.getenv("DATABASE_URL"):
         pytest.skip("DATABASE_URL is required for outbox integration tests.")
 
-    async def setup():
-        if database._pool is None:
-            await database.start_database()
-        await database.initialize_schema()
-        await generation_outbox.initialize_outbox_schema()
-
-    asyncio.run(setup())
+    if database._pool is None:
+        await database.start_database()
+    await database.initialize_schema()
+    await generation_outbox.initialize_outbox_schema()
     yield
 
 
@@ -38,8 +34,7 @@ async def _generation():
     return generation_id
 
 
-def test_enqueue_is_idempotent_and_preserves_original_event():
-    async def run():
+async def test_enqueue_is_idempotent_and_preserves_original_event(postgres_outbox):
         generation_id = await _generation()
         event_id = await generation_outbox.enqueue_generation_event(
             generation_id, payload={"source": "first"}
@@ -53,11 +48,9 @@ def test_enqueue_is_idempotent_and_preserves_original_event():
         )
         assert row["payload"] == {"source": "first"}
         assert row["state"] == "pending"
-    asyncio.run(run())
 
 
-def test_claim_complete_and_stale_lease_is_fenced():
-    async def run():
+async def test_claim_complete_and_stale_lease_is_fenced(postgres_outbox):
         generation_id = await _generation()
         event_id = await generation_outbox.enqueue_generation_event(generation_id)
         first = await generation_outbox.claim_events("worker-a", limit=10, lease_seconds=10)
@@ -89,11 +82,9 @@ def test_claim_complete_and_stale_lease_is_fenced():
         # A completed event cannot be claimed again.
         later = await generation_outbox.claim_events("worker-c", limit=100, lease_seconds=10)
         assert all(item["id"] != event_id for item in later)
-    asyncio.run(run())
 
 
-def test_retry_requires_current_lease_and_dead_letters_at_limit():
-    async def run():
+async def test_retry_requires_current_lease_and_dead_letters_at_limit(postgres_outbox):
         generation_id = await _generation()
         event_id = await generation_outbox.enqueue_generation_event(generation_id)
         claimed = await generation_outbox.claim_events("retry-worker", limit=10, lease_seconds=10)
@@ -116,4 +107,3 @@ def test_retry_requires_current_lease_and_dead_letters_at_limit():
         assert row["state"] == "dead"
         assert row["lease_token"] is None
         assert row["last_error_code"] == "provider_timeout"
-    asyncio.run(run())
