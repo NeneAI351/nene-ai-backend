@@ -14,6 +14,7 @@ def test_production_not_ready_when_critical_services_are_missing(monkeypatch):
     monkeypatch.setenv("NENE_ENV", "production")
     snapshot = readiness.readiness_snapshot(production=None, database_ready=False)
     assert snapshot["ready"] is False
+    assert snapshot["mode"] == "production"
     assert snapshot["checks"] == {
         "database_configured": False,
         "authentication_configured": False,
@@ -30,6 +31,7 @@ def test_production_ready_only_when_required_configuration_exists(monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_HMAC_SECRET", "x" * 32)
     snapshot = readiness.readiness_snapshot(production=None, database_ready=True)
     assert snapshot["ready"] is True
+    assert snapshot["mode"] == "production"
     assert all(snapshot["checks"].values())
 
 
@@ -51,6 +53,15 @@ def test_development_mode_remains_available_but_reports_missing_checks(monkeypat
     snapshot = readiness.readiness_snapshot(production=None, database_ready=False)
     assert snapshot["ready"] is True
     assert snapshot["mode"] == "development"
+    assert not any(snapshot["checks"].values())
+
+
+def test_staging_mode_is_reported_distinctly(monkeypatch):
+    clear_readiness_env(monkeypatch)
+    monkeypatch.setenv("NENE_ENV", "staging")
+    snapshot = readiness.readiness_snapshot(production=None, database_ready=False)
+    assert snapshot["ready"] is True
+    assert snapshot["mode"] == "staging"
     assert not any(snapshot["checks"].values())
 
 
