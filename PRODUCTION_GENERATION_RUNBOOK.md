@@ -21,10 +21,22 @@ Implemented but not yet production-enabled:
 
 Known limitations that still block production:
 - A submission timeout without a returned provider job ID cannot be automatically resolved unless LTX offers a documented lookup/idempotency mechanism for that request. The job retains its reservation and requires reconciliation; it is never blindly resubmitted.
-- Provider output is currently stored as a private database result containing the provider URL. Durable object-storage ingestion, URL expiry, malware/content validation, and signed NENE-owned delivery are not yet implemented.
+- Completed LTX output is downloaded without following redirects, constrained by a configured host allowlist in production, checked for public DNS resolution, bounded to a configurable maximum size, and checked for an MP4 signature before upload to private S3-compatible object storage. The database stores the object key and media metadata, not the provider URL. Authenticated `GET /api/generations/{generation_id}/media-url` returns a five-minute signed URL only for the owner of a succeeded generation. This is baseline validation, not malware scanning or full media transcoding/inspection.
 - The worker has not been deployed as a supervised service, and provider contract tests against a controlled staging account have not yet been run.
 - The frontend still uses the legacy provider-job polling contract and has not yet been migrated to NENE generation IDs.
 - Payment checkout, verified payment webhooks, subscriptions, and real-money credit fulfillment remain disabled/not implemented.
+
+## Private media storage configuration
+
+Configure these only in the worker/API secret manager; never commit credentials:
+- `NENE_MEDIA_BUCKET`: private bucket name.
+- `NENE_MEDIA_REGION`: storage region (use the provider's required region value).
+- `NENE_MEDIA_ENDPOINT`: optional HTTPS S3-compatible endpoint (for example, an S3-compatible provider endpoint); omit for AWS S3.
+- `NENE_MEDIA_ACCESS_KEY_ID` and `NENE_MEDIA_SECRET_ACCESS_KEY`: least-privilege credentials with object put/get signing rights only for the NENE generations prefix.
+- `ALLOWED_MEDIA_HOSTS`: comma-separated exact provider media hostnames or provider-owned parent domains. Required in production; keep the list narrow and provider-documented.
+- `NENE_MAX_VIDEO_BYTES`: optional max downloaded output size; default 500 MiB.
+
+Keep the bucket private, block public access, enforce TLS, use server-side encryption, and configure lifecycle/retention/deletion rules. Signed download URLs expire after five minutes. The API endpoint checks authenticated ownership and successful completion before signing. Do not put signed URLs in logs, analytics, database records, or long-lived frontend state. Provider redirects are intentionally rejected.
 
 ## Required request lifecycle
 
@@ -70,7 +82,7 @@ Known limitations that still block production:
 - [ ] Provider ambiguity is reconciled without duplicate jobs or duplicate charges.
 - [ ] Success/failure settlement and unused-credit release are idempotent under concurrency.
 - [ ] Status polling is owner-scoped and never leaks provider internals.
-- [ ] Output media is durably stored and safely delivered.
+- [ ] Output media is durably stored and safely delivered. The private-storage implementation is present on the feature branch; bucket configuration, staging verification, retention/scanning, and delivery integration remain release gates.
 - [ ] PostgreSQL integration tests cover duplicate requests, concurrent reservations, ownership, transitions, crash points, and settlement.
 - [ ] Provider contract tests and staging smoke tests pass with controlled spend.
 - [ ] Load tests, alerts, rollback plan, backup restore test, and cost/margin review are complete.
