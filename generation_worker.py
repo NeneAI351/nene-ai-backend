@@ -53,6 +53,14 @@ async def _dispatch(generation: dict[str, Any]) -> None:
     generation_id = generation["id"]
     owner = _owner_id(generation.get("user_id"))
     status = generation["status"]
+    if status == "submitting":
+        # A worker may have crashed after persisting the pre-submit state. The
+        # network call may or may not have happened; never submit a second time.
+        await generation_store.mark_submission_unknown(owner, generation_id)
+        await generation_outbox.enqueue_generation_event(
+            generation_id, "reconcile_generation", {"reason": "worker_restarted_during_submission"}
+        )
+        return
     if status != "queued":
         # A redelivered dispatch event must not submit a second external job.
         if status in {"submitted", "running", "succeeded", "failed", "submission_unknown"}:
@@ -145,11 +153,27 @@ async def _dispatch(generation: dict[str, Any]) -> None:
     )
 
 
+async def _settle_terminal(generation: dict[str, Any]) -> None:
+    """Idempotently finish credit settlement even after a crash between DB transactions."""
+    owner = _owner_id(generation.get("user_id"))
+    generation_id = generation["id"]
+    reserved = Decimal(generation["credits_reserved"])
+    charged = Decimal(generation["credits_charged"])
+    remaining = reserved - charged
+    if remaining <= 0:
+        return
+    if generation["status"] == "succeeded":
+        await wallet_capture(owner, remaining, generation_id, "generation-succeeded")
+    elif generation["status"] == "failed":
+        await wallet_release(owner, remaining, generation_id, "generation-failed")
+
+
 async def _reconcile(generation: dict[str, Any]) -> int:
     generation_id = generation["id"]
     owner = _owner_id(generation.get("user_id"))
     status = generation["status"]
     if status in {"succeeded", "failed"}:
+        await _settle_terminal(generation)
         return 0
     provider_job_id = generation.get("provider_job_id")
     if not provider_job_id:
@@ -191,21 +215,18 @@ async def _reconcile(generation: dict[str, Any]) -> int:
             owner, generation_id, "succeeded",
             result={"provider_media_url": video_url, "provider": "ltx"},
         )
-        reserved = Decimal(generation["credits_reserved"])
-        charged = Decimal(generation["credits_charged"])
-        remaining = reserved - charged
-        if remaining > 0:
-            await wallet_capture(owner, remaining, generation_id, "generation-succeeded")
+        # Re-read the terminal row so settlement recovery uses committed values.
+        terminal = await _load_generation(generation_id)
+        if terminal:
+            await _settle_terminal(terminal)
         return 0
     if raw_status in {"failed", "failure", "error", "cancelled", "canceled"}:
         await generation_store.transition_generation(
             owner, generation_id, "failed", error={"code": "provider_generation_failed"}
         )
-        reserved = Decimal(generation["credits_reserved"])
-        charged = Decimal(generation["credits_charged"])
-        remaining = reserved - charged
-        if remaining > 0:
-            await wallet_release(owner, remaining, generation_id, "generation-failed")
+        terminal = await _load_generation(generation_id)
+        if terminal:
+            await _settle_terminal(terminal)
         return 0
     raise RuntimeError("provider_returned_unknown_status")
 
@@ -214,7 +235,7 @@ async def process_event(event: dict[str, Any], worker_id: str) -> None:
     event_id = event["id"]
     generation_id = event["generation_id"]
     token = event["lease_token"]
-    delay = 30
+    delay = 0
     try:
         generation = await _load_generation(generation_id)
         if not generation:
