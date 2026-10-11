@@ -66,3 +66,45 @@ def test_signed_url_rejects_arbitrary_object_key(monkeypatch):
 def test_signed_url_ttl_is_bounded():
     with pytest.raises(ValueError):
         media_storage.create_signed_download_url("generations/00000000-0000-0000-0000-000000000000/video.mp4", 3600)
+
+
+
+def test_source_image_signature_validation():
+    assert media_storage.validate_image_bytes(b"\\xff\\xd8\\xff" + b"jpeg")[0] == "image/jpeg"
+    assert media_storage.validate_image_bytes(b"\\x89PNG\\r\\n\\x1a\\n" + b"png")[1] == "png"
+    assert media_storage.validate_image_bytes(b"RIFF" + b"\\x00\\x00\\x00\\x00" + b"WEBP" + b"webp")[0] == "image/webp"
+    with pytest.raises(ValueError, match="Only PNG"):
+        media_storage.validate_image_bytes(b"<html>not an image</html>")
+    with pytest.raises(ValueError, match="size"):
+        media_storage.validate_image_bytes(b"")
+
+
+def test_private_source_image_upload_uses_owner_scoped_key(monkeypatch):
+    calls = []
+
+    class FakeS3:
+        def put_object(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(media_storage, "_storage_config", lambda: {
+        "bucket": "nene-private-test", "region": "auto", "endpoint": "",
+        "access_key": "test-access", "secret_key": "test-secret",
+    })
+    monkeypatch.setattr(media_storage, "_client", lambda: FakeS3())
+    owner = "00000000-0000-4000-8000-000000000001"
+    asset = "00000000-0000-4000-8000-000000000002"
+    result = media_storage.upload_source_image(b"\\xff\\xd8\\xff" + b"jpeg", owner, asset)
+
+    assert result["object_key"] == f"source-images/{owner}/{asset}.jpg"
+    assert result["content_type"] == "image/jpeg"
+    assert calls[0]["Bucket"] == "nene-private-test"
+    assert calls[0]["Key"] == result["object_key"]
+    assert calls[0]["CacheControl"] == "private, no-store"
+    assert calls[0]["Metadata"] == {"owner-id": owner, "asset-id": asset}
+
+
+def test_signed_source_image_url_rejects_video_and_arbitrary_keys():
+    with pytest.raises(ValueError):
+        media_storage.create_signed_source_image_url("generations/00000000-0000-0000-0000-000000000000/video.mp4")
+    with pytest.raises(ValueError):
+        media_storage.create_signed_source_image_url("source-images/not-a-user/not-an-asset.jpg")
