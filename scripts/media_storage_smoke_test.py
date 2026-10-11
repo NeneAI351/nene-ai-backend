@@ -40,10 +40,10 @@ async def main() -> None:
     owner_id = str(uuid.uuid4())
     asset_id = str(uuid.uuid4())
     video_key = f"generations/{generation_id}/video.mp4"
-    video_fixture = b"\\x00\\x00\\x00\\x18ftypisom" + b"\\x00" * 24
+    video_fixture = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 24
     # The production source-image validator checks file signatures. This synthetic
     # fixture intentionally tests storage transport, not full PNG decoding.
-    image_fixture = b"\\x89PNG\\r\\n\\x1a\\n" + b"NENE-STAGING-SMOKE-TEST"
+    image_fixture = b"\x89PNG\r\n\x1a\n" + b"NENE-STAGING-SMOKE-TEST"
     video_uploaded = False
     source_key: str | None = None
     try:
