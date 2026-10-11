@@ -5,6 +5,7 @@ def clear_readiness_env(monkeypatch):
     for key in (
         "NENE_ENV", "RENDER_SERVICE_ID", "K_SERVICE", "FLY_APP_NAME",
         "AUTH_JWKS_URL", "AUTH_ISSUER", "REDIS_URL", "RATE_LIMIT_HMAC_SECRET",
+        "LTX_API_KEY", "ALLOWED_MEDIA_HOSTS",
         "NENE_MEDIA_BUCKET", "NENE_MEDIA_REGION", "NENE_MEDIA_ENDPOINT",
         "NENE_MEDIA_ACCESS_KEY_ID", "NENE_MEDIA_SECRET_ACCESS_KEY",
     ):
@@ -24,6 +25,8 @@ def configure_production_dependencies(monkeypatch):
     monkeypatch.setenv("AUTH_ISSUER", "https://example.supabase.co/auth/v1")
     monkeypatch.setenv("REDIS_URL", "rediss://redis.example.test:6379")
     monkeypatch.setenv("RATE_LIMIT_HMAC_SECRET", "x" * 32)
+    monkeypatch.setenv("LTX_API_KEY", "test-provider-key")
+    monkeypatch.setenv("ALLOWED_MEDIA_HOSTS", "media.example.test,cdn.example.test")
     configure_media_storage(monkeypatch)
 
 
@@ -37,6 +40,7 @@ def test_production_not_ready_when_critical_services_are_missing(monkeypatch):
         "database_configured": False,
         "authentication_configured": False,
         "shared_rate_limits_configured": False,
+        "ltx_provider_configured": False,
         "private_media_storage_configured": False,
     }
 
@@ -81,6 +85,22 @@ def test_non_https_media_endpoint_blocks_production_readiness(monkeypatch):
     assert snapshot["checks"]["private_media_storage_configured"] is False
 
 
+def test_missing_ltx_provider_or_host_allowlist_blocks_production_readiness(monkeypatch):
+    clear_readiness_env(monkeypatch)
+    monkeypatch.setenv("NENE_ENV", "production")
+    configure_production_dependencies(monkeypatch)
+    monkeypatch.delenv("LTX_API_KEY")
+    snapshot = readiness.readiness_snapshot(production=None, database_ready=True)
+    assert snapshot["ready"] is False
+    assert snapshot["checks"]["ltx_provider_configured"] is False
+
+    monkeypatch.setenv("LTX_API_KEY", "test-provider-key")
+    monkeypatch.setenv("ALLOWED_MEDIA_HOSTS", "*")
+    snapshot = readiness.readiness_snapshot(production=None, database_ready=True)
+    assert snapshot["ready"] is False
+    assert snapshot["checks"]["ltx_provider_configured"] is False
+
+
 def test_development_mode_remains_available_but_reports_missing_checks(monkeypatch):
     clear_readiness_env(monkeypatch)
     monkeypatch.setenv("NENE_ENV", "development")
@@ -107,3 +127,4 @@ def test_readiness_does_not_expose_secret_values(monkeypatch):
     assert "never-return-this" not in repr(snapshot)
     assert "REDIS_URL" not in repr(snapshot)
     assert "test-only-secret" not in repr(snapshot)
+    assert "test-provider-key" not in repr(snapshot)
