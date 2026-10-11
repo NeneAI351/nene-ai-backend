@@ -1,5 +1,6 @@
 """Production readiness checks that expose configuration state, never secrets."""
 import os
+from urllib.parse import urlparse
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -40,22 +41,35 @@ def readiness_snapshot(*, production=None, database_ready=None):
         and len(rate_limit_secret.encode("utf-8")) >= 32
     )
 
+    # The current NENE staging design uses an explicit S3-compatible endpoint
+    # (Supabase Storage). Do not report production readiness when any required
+    # storage setting is absent or the endpoint is not HTTPS.
+    media_endpoint = os.getenv("NENE_MEDIA_ENDPOINT", "").strip()
+    parsed_endpoint = urlparse(media_endpoint)
+    media_storage_ready = bool(
+        os.getenv("NENE_MEDIA_BUCKET", "").strip()
+        and os.getenv("NENE_MEDIA_REGION", "").strip()
+        and os.getenv("NENE_MEDIA_ACCESS_KEY_ID", "").strip()
+        and os.getenv("NENE_MEDIA_SECRET_ACCESS_KEY", "").strip()
+        and parsed_endpoint.scheme == "https"
+        and parsed_endpoint.hostname
+        and not parsed_endpoint.username
+        and not parsed_endpoint.password
+    )
+
     checks = {
         "database_configured": bool(database_ready),
         "authentication_configured": auth_ready,
         "shared_rate_limits_configured": rate_limits_ready,
+        "private_media_storage_configured": media_storage_ready,
     }
     ready = all(checks.values()) if production else True
 
-    # Preserve staging as its own reported mode. Previously NENE_ENV=staging
-    # was incorrectly presented as development, which made dashboard checks
-    # confusing while setting up the staging deployment.
+    # Preserve staging as its own reported mode.
     if production:
         mode = "production"
     elif configured_env == "staging":
         mode = "staging"
-    elif configured_env == "development" or not configured_env:
-        mode = "development"
     else:
         mode = "development"
 
@@ -74,4 +88,3 @@ def readiness():
         content=snapshot,
         headers={"Cache-Control": "no-store"},
     )
-"
