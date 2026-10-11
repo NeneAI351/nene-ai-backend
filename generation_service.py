@@ -95,6 +95,10 @@ async def create_reserved_generation(
         "aspect_ratio": aspect_ratio,
         "source_image_id": source_asset,
     }
+    if image_url and not source_asset:
+        # Non-production compatibility only. The production HTTP endpoint rejects
+        # public source URLs and requires source_image_id.
+        normalized["image_url"] = image_url
     serialized, fingerprint = _canonical_request(normalized)
     generation_id = str(uuid.uuid4())
     outbox_id = str(uuid.uuid4())
