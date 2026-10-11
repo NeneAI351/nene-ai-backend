@@ -1,0 +1,67 @@
+name: Staging private media storage smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_staging_only:
+        description: "Type STAGING-ONLY to confirm these credentials belong to the dedicated private staging bucket"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  storage-smoke-test:
+    if: ${{ inputs.confirm_staging_only == 'STAGING-ONLY' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      NENE_ENV: staging
+      NENE_MEDIA_BUCKET: ${{ secrets.NENE_MEDIA_BUCKET }}
+      NENE_MEDIA_REGION: ${{ secrets.NENE_MEDIA_REGION }}
+      NENE_MEDIA_ENDPOINT: ${{ secrets.NENE_MEDIA_ENDPOINT }}
+      NENE_MEDIA_ACCESS_KEY_ID: ${{ secrets.NENE_MEDIA_ACCESS_KEY_ID }}
+      NENE_MEDIA_SECRET_ACCESS_KEY: ${{ secrets.NENE_MEDIA_SECRET_ACCESS_KEY }}
+      NENE_MEDIA_SMOKE_TEST_CONFIRM: staging-only
+    steps:
+      - name: Check out staging backend branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/wallet-v1-foundation
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend requirements
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      - name: Verify required staging configuration without printing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in NENE_MEDIA_BUCKET NENE_MEDIA_REGION NENE_MEDIA_ENDPOINT NENE_MEDIA_ACCESS_KEY_ID NENE_MEDIA_SECRET_ACCESS_KEY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Required GitHub Actions secret is missing: $name"
+              exit 1
+            fi
+          done
+          if [[ "$NENE_MEDIA_ENDPOINT" != https://* ]]; then
+            echo "::error::NENE_MEDIA_ENDPOINT must be the exact HTTPS S3 endpoint from Supabase."
+            exit 1
+          fi
+          if [[ "$NENE_MEDIA_BUCKET" != "nene-media-staging" ]]; then
+            echo "::error::Refusing to run: bucket must be nene-media-staging."
+            exit 1
+          fi
+          if [[ "$NENE_MEDIA_REGION" != "eu-west-2" ]]; then
+            echo "::error::Refusing to run: region must be eu-west-2."
+            exit 1
+          fi
+          echo "Staging-only configuration checks passed."
+
+      - name: Run upload, signed-download, byte-comparison, and cleanup test
+        run: python scripts/media_storage_smoke_test.py
