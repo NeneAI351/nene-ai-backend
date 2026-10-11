@@ -63,7 +63,10 @@ async def _dispatch(generation: dict[str, Any]) -> None:
         return
     if status != "queued":
         # A redelivered dispatch event must not submit a second external job.
-        if status in {"submitted", "running", "succeeded", "failed", "submission_unknown"}:
+        if status in {"succeeded", "failed"}:
+            await _settle_terminal(generation)
+            return
+        if status in {"submitted", "running", "submission_unknown"}:
             return
         raise RuntimeError("generation_state_not_dispatchable")
     if generation["provider"] != "ltx":
