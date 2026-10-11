@@ -2,11 +2,12 @@
 
 These tests intentionally keep paid generation and provider-job polling disabled
 until generation ownership, server-side billing, and durable recovery are wired
-into the production path.
+into the production path. ASGITransport avoids opening the app's database
+lifespan: these guard tests do not need a live database.
 """
 import asyncio
 
-from fastapi.testclient import TestClient
+import httpx
 
 import app
 
@@ -28,13 +29,21 @@ def _force_production(monkeypatch):
     monkeypatch.setattr(app, "enforce_rate_limit", _skip_rate_limit)
 
 
+async def _request(method, path, **kwargs):
+    transport = httpx.ASGITransport(app=app.app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://testserver"
+    ) as client:
+        return await client.request(method, path, **kwargs)
+
+
 def test_production_generation_is_authenticated_then_fail_closed(monkeypatch):
     _force_production(monkeypatch)
-    with TestClient(app.app) as client:
-        response = client.post(
-            "/api/generate",
-            json={"type": "text-to-video", "prompt": "A safe test prompt"},
-        )
+    response = asyncio.run(_request(
+        "POST",
+        "/api/generate",
+        json={"type": "text-to-video", "prompt": "A safe test prompt"},
+    ))
 
     assert response.status_code == 503
     assert "server-side credit reservations" in response.json()["detail"]
@@ -44,8 +53,7 @@ def test_production_generation_is_authenticated_then_fail_closed(monkeypatch):
 
 def test_production_job_polling_is_fail_closed(monkeypatch):
     _force_production(monkeypatch)
-    with TestClient(app.app) as client:
-        response = client.get("/api/jobs/provider-job-id")
+    response = asyncio.run(_request("GET", "/api/jobs/provider-job-id"))
 
     assert response.status_code == 503
     assert "authenticated generation ownership" in response.json()["detail"]
@@ -60,11 +68,11 @@ def test_generation_guard_precedes_provider_submission(monkeypatch):
         raise AssertionError("Production guard must block provider submission.")
 
     monkeypatch.setattr(app, "_generate_uncached", unexpected_provider_call)
-    with TestClient(app.app) as client:
-        response = client.post(
-            "/api/generate",
-            json={"type": "text-to-video", "prompt": "A safe test prompt"},
-        )
+    response = asyncio.run(_request(
+        "POST",
+        "/api/generate",
+        json={"type": "text-to-video", "prompt": "A safe test prompt"},
+    ))
 
     assert response.status_code == 503
     assert submitted == []
