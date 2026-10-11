@@ -136,3 +136,62 @@ def create_signed_download_url(object_key: str, ttl_seconds: int = SIGNED_URL_TT
         Params={"Bucket": cfg["bucket"], "Key": object_key, "ResponseContentType": "video/mp4"},
         ExpiresIn=int(ttl_seconds),
     )
+
+
+ALLOWED_IMAGE_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+MAX_SOURCE_IMAGE_BYTES = 7 * 1024 * 1024
+
+
+def validate_image_bytes(raw: bytes) -> tuple[str, str]:
+    """Validate supported source-image signatures; never trust browser MIME labels."""
+    if not raw or len(raw) > MAX_SOURCE_IMAGE_BYTES:
+        raise ValueError("Source image size is outside the allowed range.")
+    if raw.startswith(b"\\xff\\xd8\\xff"):
+        return "image/jpeg", "jpg"
+    if raw.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+        return "image/png", "png"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "image/webp", "webp"
+    raise ValueError("Only PNG, JPEG and WEBP images are supported.")
+
+
+def upload_source_image(raw: bytes, owner_id: str, asset_id: str) -> dict[str, str | int]:
+    """Store a validated source image privately under an owner-scoped object key."""
+    import uuid
+    owner = str(uuid.UUID(owner_id))
+    asset = str(uuid.UUID(asset_id))
+    content_type, extension = validate_image_bytes(raw)
+    key = f"source-images/{owner}/{asset}.{extension}"
+    cfg = _storage_config()
+    _client().put_object(
+        Bucket=cfg["bucket"], Key=key, Body=raw, ContentLength=len(raw),
+        ContentType=content_type, ContentDisposition="inline",
+        CacheControl="private, no-store",
+        Metadata={"owner-id": owner, "asset-id": asset},
+    )
+    return {"object_key": key, "content_type": content_type, "size_bytes": len(raw)}
+
+
+def create_signed_source_image_url(object_key: str, ttl_seconds: int = 300) -> str:
+    """Create a short-lived provider-fetch URL only for a structurally valid source image key."""
+    import uuid
+    if not isinstance(object_key, str):
+        raise ValueError("Invalid source image object key.")
+    pieces = object_key.split("/")
+    if len(pieces) != 3 or pieces[0] != "source-images":
+        raise ValueError("Invalid source image object key.")
+    owner = str(uuid.UUID(pieces[1]))
+    filename = pieces[2]
+    asset_part, dot, extension = filename.rpartition(".")
+    asset = str(uuid.UUID(asset_part)) if dot else ""
+    if not asset or extension not in {"jpg", "png", "webp"}:
+        raise ValueError("Invalid source image object key.")
+    if not 1 <= int(ttl_seconds) <= 600:
+        raise ValueError("Invalid source image URL expiry.")
+    cfg = _storage_config()
+    return _client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": cfg["bucket"], "Key": object_key,
+                "ResponseContentType": {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}[extension]},
+        ExpiresIn=int(ttl_seconds),
+    )
