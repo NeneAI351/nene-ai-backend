@@ -250,12 +250,16 @@ async def image_upload(req: ImageUploadRequest, request: Request):
     declared_mime = header.split(";", 1)[0][5:].lower().strip()
     logger.info("Image upload received: declared_mime=%s encoded_chars=%s", declared_mime, len(encoded))
 
+    # Reject oversized encoded bodies before allocating the decoded image buffer.
+    max_image_bytes = 7 * 1024 * 1024
+    if len(encoded) > ((max_image_bytes + 2) // 3) * 4:
+        raise HTTPException(status_code=400, detail="Image is too large.")
     try:
         raw = base64.b64decode(encoded, validate=True)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid base64 image.")
 
-    if len(raw) > 7 * 1024 * 1024:
+    if len(raw) > max_image_bytes:
         raise HTTPException(status_code=400, detail="Image is too large.")
     if not raw:
         raise HTTPException(status_code=400, detail="Image data is empty.")
