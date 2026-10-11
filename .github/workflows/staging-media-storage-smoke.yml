@@ -24,6 +24,7 @@ jobs:
       NENE_MEDIA_ACCESS_KEY_ID: ${{ secrets.NENE_MEDIA_ACCESS_KEY_ID }}
       NENE_MEDIA_SECRET_ACCESS_KEY: ${{ secrets.NENE_MEDIA_SECRET_ACCESS_KEY }}
       NENE_MEDIA_SMOKE_TEST_CONFIRM: staging-only
+      PYTHONPATH: .
     steps:
       - name: Check out staging backend branch
         uses: actions/checkout@v4
