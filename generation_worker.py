@@ -128,9 +128,6 @@ async def _dispatch(generation: dict[str, Any]) -> None:
     if kind not in {"text-to-video", "image-to-video"}:
         raise RuntimeError("unsupported_generation_type")
 
-    # Commit 'submitting' before the network call. After a crash/timeout we
-    # never blindly resubmit: the provider may have accepted the original call.
-    await generation_store.begin_submission(owner, generation_id)
     payload = {
         "prompt": str(request["prompt"]),
         "model": str(request["model"]),
@@ -174,6 +171,10 @@ async def _dispatch(generation: dict[str, Any]) -> None:
                 await _settle_terminal(terminal)
             return
 
+    # Validate local/private dependencies and mint any expiring source URL
+    # before persisting 'submitting'. Only the provider network call itself is
+    # inside the ambiguous-submission window.
+    await generation_store.begin_submission(owner, generation_id)
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(90.0, connect=10.0)) as client:
             response = await client.post(f"{base}/v2/{kind}", headers=headers, json=payload)
