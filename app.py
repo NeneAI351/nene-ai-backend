@@ -29,6 +29,7 @@ from auth import get_authenticated_user_id
 from readiness import router as readiness_router
 from projects import router as projects_router
 from characters import router as characters_router
+import generation_store
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
@@ -809,6 +810,42 @@ async def generate(req: GenerateRequest, request: Request, idempotency_key: Opti
             # generation into an apparent failure that could cause a retry.
             logger.exception("Generation completed but durable idempotency could not be saved.")
     return response
+
+@app.get("/api/generations/{generation_id}")
+async def get_generation(generation_id: str, request: Request):
+    """Authenticated owner-only status polling by NENE's durable generation UUID.
+
+    This endpoint deliberately does not accept a provider name or provider job ID
+    from the client and does not return raw provider payloads/media URLs. Provider
+    reconciliation and private media delivery remain separate server-side duties.
+    """
+    await enforce_rate_limit(request, bucket="generation-poll", limit=60, window_seconds=60)
+    user_id = await get_authenticated_user_id(request)
+    if not database_configured():
+        raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
+    try:
+        row = await generation_store.get_owned_generation(user_id, generation_id)
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
+    if not row:
+        # Same response for unknown IDs and another user's IDs prevents ID probing.
+        raise HTTPException(status_code=404, detail="Generation not found.")
+    return {
+        "ok": True,
+        "generation": {
+            "id": row["id"],
+            "project_id": row.get("project_id"),
+            "type": row["generation_type"],
+            "status": row["status"],
+            "credits_reserved": str(row.get("credits_reserved", "0.00")),
+            "credits_charged": str(row.get("credits_charged", "0.00")),
+            "error": row.get("error"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "completed_at": row.get("completed_at"),
+        },
+    }
+
 
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
