@@ -52,6 +52,7 @@ async def create_reserved_generation(
     project_id: str | None = None,
     aspect_ratio: str | None = None,
     image_url: str | None = None,
+    source_image_id: str | None = None,
 ) -> dict[str, Any]:
     """Create one billable generation in one PostgreSQL transaction.
 
@@ -75,8 +76,9 @@ async def create_reserved_generation(
         raise ValueError("Duration must be one of the supported billable durations: 6, 8, or 10 seconds.")
     if generation_type not in {"text-to-video", "image-to-video"}:
         raise ValueError("Unsupported generation type.")
-    if generation_type == "image-to-video" and not image_url:
-        raise ValueError("Image-to-video requires a source image URL.")
+    if generation_type == "image-to-video" and not (source_image_id or image_url):
+        raise ValueError("Image-to-video requires a private source image asset.")
+    source_asset = _uuid(source_image_id, "source image identifier") if source_image_id else None
     if aspect_ratio and aspect_ratio not in {"16:9", "9:16", "1:1", "21:9", "4:3", "3:4", "3:2", "2:3", "4:5"}:
         raise ValueError("Unsupported aspect ratio.")
 
@@ -91,7 +93,7 @@ async def create_reserved_generation(
         "resolution": quote["resolution"],
         "duration": duration_seconds,
         "aspect_ratio": aspect_ratio,
-        "image_url": image_url,
+        "source_image_id": source_asset,
     }
     serialized, fingerprint = _canonical_request(normalized)
     generation_id = str(uuid.uuid4())
@@ -139,6 +141,16 @@ async def create_reserved_generation(
                 # generation. Treat legacy/interrupted records as a conflict.
                 raise GenerationRequestConflict("An earlier request with this key needs reconciliation.")
 
+            if source_asset:
+                owned_asset = await (await conn.execute(
+                    """SELECT id FROM media_assets
+                       WHERE id=%s AND user_id=%s AND asset_type='source_image'
+                         AND deleted_at IS NULL
+                       FOR KEY SHARE""",
+                    (source_asset, owner),
+                )).fetchone()
+                if not owned_asset:
+                    raise LookupError("Source image not found.")
             if project:
                 owned_project = await (await conn.execute(
                     """SELECT id FROM projects
