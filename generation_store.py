@@ -64,6 +64,110 @@ def _safe_snapshot(request: dict[str, Any]) -> str:
     return snapshot
 
 
+async def claim_generation_idempotency(
+    user_id: str, idempotency_key: str, request_fingerprint: str
+) -> dict[str, Any]:
+    """Atomically claim a key within one user namespace.
+
+    A reused key with a different fingerprint is a conflict. Existing pending
+    records are returned as pending; callers must not resubmit provider work
+    merely because the first HTTP request timed out.
+    """
+    pool = _require_pool()
+    try:
+        owner_uuid = str(uuid.UUID(user_id))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("Invalid user identifier.") from exc
+    key = (idempotency_key or "").strip()
+    fingerprint = (request_fingerprint or "").strip()
+    if not key or len(key) > 200 or not fingerprint or len(fingerprint) > 128:
+        raise ValueError("Invalid idempotency key or request fingerprint.")
+
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            inserted = await (await conn.execute(
+                """INSERT INTO generation_requests
+                   (user_id,idempotency_key,request_fingerprint,state)
+                   VALUES (%s,%s,%s,'reserved')
+                   ON CONFLICT (user_id,idempotency_key) DO NOTHING
+                   RETURNING user_id::text""",
+                (owner_uuid, key, fingerprint),
+            )).fetchone()
+            if inserted:
+                return {"claimed": True, "state": "reserved", "generation_id": None}
+            existing = await (await conn.execute(
+                """SELECT request_fingerprint,state,generation_id::text,response
+                   FROM generation_requests
+                   WHERE user_id=%s AND idempotency_key=%s FOR UPDATE""",
+                (owner_uuid, key),
+            )).fetchone()
+            if not existing:
+                raise RuntimeError("Idempotency record disappeared during lookup.")
+            if existing["request_fingerprint"] != fingerprint:
+                raise GenerationConflict("Idempotency key reused for a different request.")
+            return {
+                "claimed": False,
+                "state": existing["state"],
+                "generation_id": existing["generation_id"],
+                "response": existing["response"],
+            }
+
+
+async def bind_generation_idempotency(
+    user_id: str, idempotency_key: str, request_fingerprint: str, generation_id: str
+) -> None:
+    """Bind the claimed key to the durable generation without changing its owner."""
+    pool = _require_pool()
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            row = await (await conn.execute(
+                """SELECT request_fingerprint,generation_id,state
+                   FROM generation_requests
+                   WHERE user_id=%s AND idempotency_key=%s FOR UPDATE""",
+                (user_id, idempotency_key),
+            )).fetchone()
+            if not row or row["request_fingerprint"] != request_fingerprint:
+                raise GenerationConflict("Generation idempotency claim does not match.")
+            if row["generation_id"] and row["generation_id"] != generation_id:
+                raise GenerationConflict("Idempotency key is already bound to another generation.")
+            await conn.execute(
+                """UPDATE generation_requests
+                   SET generation_id=%s, updated_at=NOW()
+                   WHERE user_id=%s AND idempotency_key=%s""",
+                (generation_id, user_id, idempotency_key),
+            )
+
+
+async def finish_generation_idempotency(
+    user_id: str, idempotency_key: str, generation_id: str,
+    state: str, response: dict[str, Any] | None = None,
+) -> None:
+    """Mark a request accepted/failed; never overwrite a different generation."""
+    if state not in {"accepted", "failed"}:
+        raise ValueError("Invalid terminal idempotency state.")
+    pool = _require_pool()
+    response_json = json.dumps(response, separators=(",", ":"), ensure_ascii=False) if response is not None else None
+    if response_json and len(response_json.encode("utf-8")) > 16 * 1024:
+        raise ValueError("Idempotency response is too large.")
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            row = await (await conn.execute(
+                """SELECT generation_id::text,state FROM generation_requests
+                   WHERE user_id=%s AND idempotency_key=%s FOR UPDATE""",
+                (user_id, idempotency_key),
+            )).fetchone()
+            if not row or row["generation_id"] != generation_id:
+                raise GenerationConflict("Idempotency key is not bound to this generation.")
+            if row["state"] in {"accepted", "failed"} and row["state"] != state:
+                raise GenerationConflict("Terminal idempotency state cannot be reversed.")
+            await conn.execute(
+                """UPDATE generation_requests SET state=%s,
+                   response=COALESCE(%s::jsonb,response), updated_at=NOW()
+                   WHERE user_id=%s AND idempotency_key=%s""",
+                (state, response_json, user_id, idempotency_key),
+            )
+
+
 async def create_generation(
     user_id: str,
     request: dict[str, Any],
