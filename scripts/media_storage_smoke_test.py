@@ -95,6 +95,28 @@ async def main() -> None:
                 "Source-image",
             )
 
+            # The object is known to exist (verified above through authenticated
+            # S3 HEAD). A raw anonymous request to Supabase's public-object route
+            # must never return the fixture. This deliberately uses no API key,
+            # JWT, cookies, or signed URL.
+            public_object_url = (
+                "https://agchmegopyktwofcupny.supabase.co/storage/v1/object/public/"
+                f"{cfg['bucket']}/{video_key}"
+            )
+            anonymous_response = await http.get(public_object_url)
+            if anonymous_response.status_code == 200 and anonymous_response.content == video_fixture:
+                raise RuntimeError(
+                    "SECURITY FAILURE: generated-video fixture was downloadable anonymously."
+                )
+            if anonymous_response.status_code == 200:
+                raise RuntimeError(
+                    "SECURITY FAILURE: anonymous public-object route returned HTTP 200 for a private test object."
+                )
+            print(
+                "PASS: anonymous public-object request did not return the known-existing private video "
+                f"(HTTP {anonymous_response.status_code})."
+            )
+
         print("PASS: private generated-video upload and five-minute signed GET.")
         print("PASS: private source-image upload and five-minute signed GET.")
         print("PASS: both downloaded fixtures matched uploaded bytes.")
