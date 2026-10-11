@@ -29,6 +29,7 @@ from auth import get_authenticated_user_id
 from readiness import router as readiness_router
 from projects import router as projects_router
 from characters import router as characters_router
+import database
 import generation_store
 import generation_service
 from generation_service import GenerationRequestConflict, InsufficientCredits
