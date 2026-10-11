@@ -34,6 +34,7 @@ async def _generation():
     return generation_id
 
 
+@pytest.mark.asyncio
 async def test_enqueue_is_idempotent_and_preserves_original_event(postgres_outbox):
         generation_id = await _generation()
         event_id = await generation_outbox.enqueue_generation_event(
@@ -50,6 +51,7 @@ async def test_enqueue_is_idempotent_and_preserves_original_event(postgres_outbo
         assert row["state"] == "pending"
 
 
+@pytest.mark.asyncio
 async def test_claim_complete_and_stale_lease_is_fenced(postgres_outbox):
         generation_id = await _generation()
         event_id = await generation_outbox.enqueue_generation_event(generation_id)
@@ -84,6 +86,7 @@ async def test_claim_complete_and_stale_lease_is_fenced(postgres_outbox):
         assert all(item["id"] != event_id for item in later)
 
 
+@pytest.mark.asyncio
 async def test_retry_requires_current_lease_and_dead_letters_at_limit(postgres_outbox):
         generation_id = await _generation()
         event_id = await generation_outbox.enqueue_generation_event(generation_id)
