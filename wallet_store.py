@@ -196,6 +196,23 @@ async def _apply(user_id: str, amount: Decimal, operation_type: str,
                    WHERE user_id=%s""",
                 (available, reserved, lifetime_delta, user_id),
             )
+
+            # Keep generation accounting in the same transaction as the wallet
+            # ledger so a crash cannot leave a captured/released balance out of sync.
+            if operation_type == "reserve":
+                await conn.execute(
+                    """UPDATE generations
+                       SET credits_reserved=credits_reserved+%s, updated_at=NOW()
+                       WHERE id=%s AND user_id=%s""",
+                    (amount, generation_id, user_id),
+                )
+            elif operation_type == "capture":
+                await conn.execute(
+                    """UPDATE generations
+                       SET credits_charged=credits_charged+%s, updated_at=NOW()
+                       WHERE id=%s AND user_id=%s""",
+                    (amount, generation_id, user_id),
+                )
             result = {
                 "available_credits": str(available),
                 "reserved_credits": str(reserved),
