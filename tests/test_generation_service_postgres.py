@@ -99,3 +99,68 @@ async def test_insufficient_credits_rolls_back_generation_and_idempotency(genera
 
 
 from decimal import Decimal
+
+
+
+@pytest.mark.asyncio
+async def test_image_generation_persists_private_asset_id_not_public_url(generation_service_db):
+    user_id = await _user_with_credits("500.00")
+    asset_id = str(uuid.uuid4())
+    async with database._pool.connection() as conn:
+        await conn.execute(
+            """INSERT INTO media_assets
+               (id,user_id,asset_type,object_key,content_type,size_bytes)
+               VALUES (%s,%s,'source_image',%s,'image/jpeg',128)""",
+            (asset_id, user_id, f"source-images/{user_id}/{asset_id}.jpg"),
+        )
+        await conn.commit()
+
+    result = await generation_service.create_reserved_generation(
+        user_id,
+        "private-image-request",
+        prompt="Animate the uploaded portrait with gentle camera movement",
+        provider="ltx",
+        model="ltx-2-5-fast",
+        resolution="720p",
+        duration_seconds=6,
+        generation_type="image-to-video",
+        source_image_id=asset_id,
+    )
+    row = await database.fetch_one(
+        "SELECT request FROM generations WHERE id=%s AND user_id=%s",
+        (result["generation_id"], user_id),
+    )
+    request = row["request"]
+    if isinstance(request, str):
+        import json
+        request = json.loads(request)
+    assert request["source_image_id"] == asset_id
+    assert "image_url" not in request
+
+
+@pytest.mark.asyncio
+async def test_user_cannot_use_another_owners_private_source_asset(generation_service_db):
+    owner_id = await _user_with_credits("500.00")
+    other_user_id = await _user_with_credits("500.00")
+    asset_id = str(uuid.uuid4())
+    async with database._pool.connection() as conn:
+        await conn.execute(
+            """INSERT INTO media_assets
+               (id,user_id,asset_type,object_key,content_type,size_bytes)
+               VALUES (%s,%s,'source_image',%s,'image/jpeg',128)""",
+            (asset_id, owner_id, f"source-images/{owner_id}/{asset_id}.jpg"),
+        )
+        await conn.commit()
+
+    with pytest.raises(LookupError, match="Source image not found"):
+        await generation_service.create_reserved_generation(
+            other_user_id,
+            "stolen-image-request",
+            prompt="Animate a portrait",
+            provider="ltx",
+            model="ltx-2-5-fast",
+            resolution="720p",
+            duration_seconds=6,
+            generation_type="image-to-video",
+            source_image_id=asset_id,
+        )
