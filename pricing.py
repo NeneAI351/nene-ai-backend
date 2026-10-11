@@ -49,7 +49,9 @@ def _norm_resolution(value: str) -> str:
     if "2160" in v or "4k" in v: return "4k"
     if "1440" in v: return "1440p"
     if "1080" in v: return "1080p"
-    return "720p"
+    if "720" in v: return "720p"
+    if "480" in v: return "480p"
+    raise ValueError("Unsupported resolution. Choose 480p, 720p, 1080p, 1440p, or 4k.")
 
 def _norm_model(provider: str, model: str) -> str:
     m = (model or "").lower().strip()
@@ -71,10 +73,19 @@ def get_rate(provider: str, model: str, resolution: str) -> dict[str, Any] | Non
     return None
 
 def quote(provider: str, model: str, resolution: str, duration: float, margin: float | None = None) -> dict[str, Any]:
-    duration = max(0.0, float(duration or 0))
-    margin = TARGET_GROSS_MARGIN if margin is None else float(margin)
-    if not 0 <= margin < 1:
-        raise ValueError("margin must be between 0 and 1")
+    try:
+        duration = float(duration)
+        margin = TARGET_GROSS_MARGIN if margin is None else float(margin)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("duration and margin must be finite numbers") from exc
+    if not math.isfinite(duration) or not 1 <= duration <= 20:
+        raise ValueError("duration must be between 1 and 20 seconds")
+    if not math.isfinite(margin) or not 0 <= margin < 0.95:
+        raise ValueError("margin must be finite and between 0 and 0.95")
+    if not math.isfinite(NENE_CREDIT_USD) or NENE_CREDIT_USD <= 0:
+        raise ValueError("NENE_CREDIT_USD must be a positive finite number")
+    if not math.isfinite(RISK_BUFFER) or not 0 <= RISK_BUFFER <= 2:
+        raise ValueError("NENE_PROVIDER_RISK_BUFFER must be between 0 and 2")
     rate = get_rate(provider, model, resolution)
     if not rate:
         raise KeyError(f"No cost rate for {provider}/{model}/{resolution}")
