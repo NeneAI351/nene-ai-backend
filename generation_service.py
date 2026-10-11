@@ -69,8 +69,8 @@ async def create_reserved_generation(
     prompt = (prompt or "").strip()
     if not prompt or len(prompt) > 12000:
         raise ValueError("Prompt must contain between 1 and 12000 characters.")
-    if provider not in {"ltx", "magic-hour"}:
-        raise ValueError("This generation flow currently supports explicitly priced LTX or Magic Hour routes only.")
+    if provider != "ltx":
+        raise ValueError("The durable worker currently supports the LTX provider only. Other providers remain disabled in this flow.")
     if duration_seconds not in {6, 8, 10}:
         raise ValueError("Duration must be one of the supported billable durations: 6, 8, or 10 seconds.")
     if generation_type not in {"text-to-video", "image-to-video"}:
