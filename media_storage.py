@@ -195,3 +195,19 @@ def create_signed_source_image_url(object_key: str, ttl_seconds: int = 300) -> s
                 "ResponseContentType": {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}[extension]},
         ExpiresIn=int(ttl_seconds),
     )
+
+
+
+def delete_source_image(object_key: str) -> None:
+    """Best-effort cleanup for an uploaded source image whose DB row was not committed."""
+    pieces = object_key.split("/") if isinstance(object_key, str) else []
+    if len(pieces) != 3 or pieces[0] != "source-images":
+        raise ValueError("Invalid source image object key.")
+    import uuid
+    str(uuid.UUID(pieces[1]))
+    asset_part, dot, extension = pieces[2].rpartition(".")
+    if not dot or extension not in {"jpg", "png", "webp"}:
+        raise ValueError("Invalid source image object key.")
+    str(uuid.UUID(asset_part))
+    cfg = _storage_config()
+    _client().delete_object(Bucket=cfg["bucket"], Key=object_key)
