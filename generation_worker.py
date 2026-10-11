@@ -140,12 +140,38 @@ async def _dispatch(generation: dict[str, Any]) -> None:
     if request.get("aspect_ratio"):
         payload["aspect_ratio"] = request["aspect_ratio"]
     if kind == "image-to-video":
-        payload["image_uri"] = request.get("image_url")
+        source_image_id = request.get("source_image_id")
+        if source_image_id:
+            asset = await database.fetch_one(
+                """SELECT object_key FROM media_assets
+                   WHERE id=%s AND user_id=%s AND asset_type='source_image'
+                     AND deleted_at IS NULL""",
+                (source_image_id, owner),
+            )
+            if not asset:
+                await generation_store.transition_generation(
+                    owner, generation_id, "failed", error={"code": "source_image_not_found"}
+                )
+                terminal = await _load_generation(generation_id)
+                if terminal:
+                    await _settle_terminal(terminal)
+                return
+            # Mint a short-lived GET URL only immediately before provider submission;
+            # never persist it in the generation request or expose it to the browser.
+            payload["image_uri"] = await asyncio.to_thread(
+                media_storage.create_signed_source_image_url, asset["object_key"], 300
+            )
+        else:
+            # Legacy non-production generation requests only. Production API
+            # rejects this public-URL path and requires an owner-scoped asset ID.
+            payload["image_uri"] = request.get("image_url")
         if not payload["image_uri"]:
             await generation_store.transition_generation(
                 owner, generation_id, "failed", error={"code": "missing_source_image"}
             )
-            await wallet_release(owner, Decimal(generation["credits_reserved"]), generation_id, "generation-failed")
+            terminal = await _load_generation(generation_id)
+            if terminal:
+                await _settle_terminal(terminal)
             return
 
     try:
