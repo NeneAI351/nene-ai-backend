@@ -180,11 +180,16 @@ def create_signed_source_image_url(object_key: str, ttl_seconds: int = 300) -> s
     pieces = object_key.split("/")
     if len(pieces) != 3 or pieces[0] != "source-images":
         raise ValueError("Invalid source image object key.")
-    owner = str(uuid.UUID(pieces[1]))
     filename = pieces[2]
     asset_part, dot, extension = filename.rpartition(".")
-    asset = str(uuid.UUID(asset_part)) if dot else ""
-    if not asset or extension not in {"jpg", "png", "webp"}:
+    if not dot or extension not in {"jpg", "png", "webp"}:
+        raise ValueError("Invalid source image object key.")
+    try:
+        owner = str(uuid.UUID(pieces[1]))
+        asset = str(uuid.UUID(asset_part))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise ValueError("Invalid source image object key.") from exc
+    if owner != pieces[1] or asset != asset_part:
         raise ValueError("Invalid source image object key.")
     if not 1 <= int(ttl_seconds) <= 600:
         raise ValueError("Invalid source image URL expiry.")
