@@ -12,6 +12,7 @@ import os
 import uuid
 
 import httpx
+from botocore.exceptions import ClientError
 
 import media_storage
 
@@ -59,6 +60,22 @@ async def main() -> None:
         video_uploaded = True
         source = media_storage.upload_source_image(image_fixture, owner_id, asset_id)
         source_key = str(source["object_key"])
+        expected_source_key = f"source-images/{owner_id}/{asset_id}.png"
+        if source_key != expected_source_key:
+            raise RuntimeError("Source-image object key is not scoped to the expected owner and asset.")
+        if source["content_type"] != "image/png" or source["size_bytes"] != len(image_fixture):
+            raise RuntimeError("Source-image metadata does not match the uploaded fixture.")
+
+        video_metadata = client.head_object(Bucket=cfg["bucket"], Key=video_key)
+        source_metadata = client.head_object(Bucket=cfg["bucket"], Key=source_key)
+        for label, metadata, expected_type in (
+            ("Generated-video", video_metadata, "video/mp4"),
+            ("Source-image", source_metadata, "image/png"),
+        ):
+            if metadata.get("ContentType") != expected_type:
+                raise RuntimeError(f"{label} object has an unexpected Content-Type.")
+            if "no-store" not in metadata.get("CacheControl", ""):
+                raise RuntimeError(f"{label} object is missing the private no-store cache policy.")
 
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(20.0, connect=5.0),
@@ -87,13 +104,31 @@ async def main() -> None:
         if source_key:
             try:
                 media_storage.delete_source_image(source_key)
-                print("Temporary source-image object deleted.")
+                try:
+                    client.head_object(Bucket=cfg["bucket"], Key=source_key)
+                except ClientError as check_error:
+                    status = check_error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                    code = check_error.response.get("Error", {}).get("Code")
+                    if status != 404 and code not in {"404", "NoSuchKey", "NotFound"}:
+                        raise
+                else:
+                    raise RuntimeError("Source-image object still exists after cleanup.")
+                print("Temporary source-image object deleted and absence verified.")
             except Exception as exc:
                 cleanup_errors.append(f"source-image cleanup failed ({type(exc).__name__})")
         if video_uploaded:
             try:
                 client.delete_object(Bucket=cfg["bucket"], Key=video_key)
-                print("Temporary generated-video object deleted.")
+                try:
+                    client.head_object(Bucket=cfg["bucket"], Key=video_key)
+                except ClientError as check_error:
+                    status = check_error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+                    code = check_error.response.get("Error", {}).get("Code")
+                    if status != 404 and code not in {"404", "NoSuchKey", "NotFound"}:
+                        raise
+                else:
+                    raise RuntimeError("Generated-video object still exists after cleanup.")
+                print("Temporary generated-video object deleted and absence verified.")
             except Exception as exc:
                 cleanup_errors.append(f"generated-video cleanup failed ({type(exc).__name__})")
         if cleanup_errors:
