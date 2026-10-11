@@ -17,8 +17,12 @@ import media_storage
 
 
 async def main() -> None:
-    if os.getenv("NENE_ENV", "").strip().lower() == "production":
-        raise SystemExit("Refusing to run storage smoke test with NENE_ENV=production.")
+    if os.getenv("NENE_ENV", "").strip().lower() == "production" or any(
+        os.getenv(name) for name in ("RENDER_SERVICE_ID", "K_SERVICE", "FLY_APP_NAME")
+    ):
+        raise SystemExit("Refusing to run storage smoke test in a detected hosted/production environment.")
+    if os.getenv("NENE_MEDIA_SMOKE_TEST_CONFIRM") != "staging-only":
+        raise SystemExit("Set NENE_MEDIA_SMOKE_TEST_CONFIRM=staging-only after verifying these are staging credentials and a dedicated staging bucket.")
     cfg = media_storage._storage_config()
     client = media_storage._client()
     generation_id = str(uuid.uuid4())
