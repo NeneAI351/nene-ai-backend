@@ -118,12 +118,7 @@ async def claim_events(worker_id: str, limit: int = 10, lease_seconds: int = 60)
 
 async def complete_event(event_id: str, worker_id: str) -> None:
     """Only the current lease owner may acknowledge a claimed event."""
-    await _update_leased_event(
-        event_id, worker_id,
-        """UPDATE generation_outbox SET state='completed', lease_owner=NULL,
-           lease_expires_at=NULL, last_error_code=NULL, updated_at=NOW()
-           WHERE id=%s AND state='processing' AND lease_owner=%s""",
-    )
+    await _update_leased_event(event_id, worker_id)
 
 
 async def retry_event(
@@ -158,7 +153,7 @@ async def retry_event(
                 raise OutboxConflict("Event lease is missing, expired, or owned by another worker.")
 
 
-async def _update_leased_event(event_id: str, worker_id: str, _unused_sql: str) -> None:
+async def _update_leased_event(event_id: str, worker_id: str) -> None:
     try:
         event_uuid = str(uuid.UUID(event_id))
     except (ValueError, TypeError, AttributeError) as exc:
