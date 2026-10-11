@@ -120,12 +120,20 @@ async def create_reserved_generation(
                 if not prior or prior["request_fingerprint"] != fingerprint:
                     raise GenerationRequestConflict("Idempotency key was already used for a different request.")
                 if prior["generation_id"]:
+                    existing_generation = await (await conn.execute(
+                        "SELECT status,credits_reserved FROM generations WHERE id=%s AND user_id=%s",
+                        (prior["generation_id"], owner),
+                    )).fetchone()
+                    if not existing_generation:
+                        raise GenerationRequestConflict("The idempotent generation record is missing and requires reconciliation.")
+                    original = prior.get("response") or {}
                     return {
                         "ok": True,
                         "duplicate": True,
                         "generation_id": prior["generation_id"],
-                        "status": "queued",
-                        "quote": quote,
+                        "status": existing_generation["status"],
+                        "credits_reserved": str(existing_generation["credits_reserved"]),
+                        "quote": original.get("quote", quote),
                     }
                 # A correctly atomic creation never commits a key without its
                 # generation. Treat legacy/interrupted records as a conflict.
@@ -201,7 +209,7 @@ async def create_reserved_generation(
                 """UPDATE generation_requests
                    SET generation_id=%s,state='accepted',response=%s::jsonb,updated_at=NOW()
                    WHERE user_id=%s AND idempotency_key=%s""",
-                (generation_id, json.dumps({"generation_id": generation_id, "status": "queued"}),
+                (generation_id, json.dumps({"generation_id": generation_id, "status": "queued", "quote": quote}),
                  owner, key),
             )
             await conn.execute(
