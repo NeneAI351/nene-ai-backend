@@ -127,8 +127,8 @@ def test_delete_source_image_rejects_keys_outside_source_prefix():
 
 
 def test_source_image_keys_require_canonical_uuids(monkeypatch):
-    owner = "00000000-0000-4000-8000-000000000001"
-    asset = "00000000-0000-4000-8000-000000000002"
+    owner = "abcdefab-cdef-4abc-8def-abcdefabcdef"
+    asset = "fedcbafe-dcba-4fed-8cba-fedcbafedcba"
     noncanonical_owner = owner.upper()
     noncanonical_key = f"source-images/{noncanonical_owner}/{asset}.jpg"
     with pytest.raises(ValueError, match="Invalid source image object key"):
