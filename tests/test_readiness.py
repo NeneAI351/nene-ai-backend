@@ -94,11 +94,16 @@ def test_missing_ltx_provider_or_host_allowlist_blocks_production_readiness(monk
     assert snapshot["ready"] is False
     assert snapshot["checks"]["ltx_provider_configured"] is False
 
-    monkeypatch.setenv("LTX_API_KEY", "test-provider-key")
-    monkeypatch.setenv("ALLOWED_MEDIA_HOSTS", "*")
-    snapshot = readiness.readiness_snapshot(production=None, database_ready=True)
-    assert snapshot["ready"] is False
-    assert snapshot["checks"]["ltx_provider_configured"] is False
+
+def test_wildcard_or_url_media_allowlist_is_rejected(monkeypatch):
+    clear_readiness_env(monkeypatch)
+    monkeypatch.setenv("NENE_ENV", "production")
+    configure_production_dependencies(monkeypatch)
+    for invalid in ("*", "*.example.test", "https://media.example.test", "media.example.test/path", "localhost"):
+        monkeypatch.setenv("ALLOWED_MEDIA_HOSTS", invalid)
+        snapshot = readiness.readiness_snapshot(production=None, database_ready=True)
+        assert snapshot["ready"] is False, invalid
+        assert snapshot["checks"]["ltx_provider_configured"] is False
 
 
 def test_development_mode_remains_available_but_reports_missing_checks(monkeypatch):
