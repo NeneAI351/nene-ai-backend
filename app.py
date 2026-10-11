@@ -30,6 +30,7 @@ from readiness import router as readiness_router
 from projects import router as projects_router
 from characters import router as characters_router
 import generation_store
+from generation_outbox import initialize_outbox_schema
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
@@ -111,6 +112,7 @@ async def _startup_database():
         await start_database()
         await initialize_schema()
         await initialize_wallet_schema()
+        await initialize_outbox_schema()
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
