@@ -9,6 +9,23 @@ This document is an engineering release gate, not a claim that production genera
 - Keep the backend security PR in draft until review and staging verification are complete.
 - A passing CI suite validates only the cases it runs; it does not establish million-user capacity.
 
+## Implementation status on the feature branch
+
+Implemented but not yet production-enabled:
+- `POST /api/generations` authenticates the owner, applies shared rate limiting, recalculates the quote server-side, and creates the generation, reservation, ledger rows, idempotency record, and dispatch outbox row in one PostgreSQL transaction.
+- The durable generation flow currently accepts only the LTX provider adapter. Other providers are rejected rather than silently routed to a provider with different cost semantics.
+- `generation_worker.py` is a separate-process worker for LTX dispatch and status reconciliation. Run it as a distinct service/process with the same database configuration and the LTX API key.
+- A worker restart during an in-flight submission transitions the job to `submission_unknown`; the worker does not blindly submit again.
+- Terminal credit settlement is retried through the outbox if a worker crashes between the generation status update and the wallet transaction. Wallet operation keys make capture/release retries idempotent.
+- Unit tests cover worker restart ambiguity, terminal settlement amounts, and successful dispatch-event acknowledgement. PostgreSQL integration tests cover atomic generation reservation and idempotency.
+
+Known limitations that still block production:
+- A submission timeout without a returned provider job ID cannot be automatically resolved unless LTX offers a documented lookup/idempotency mechanism for that request. The job retains its reservation and requires reconciliation; it is never blindly resubmitted.
+- Provider output is currently stored as a private database result containing the provider URL. Durable object-storage ingestion, URL expiry, malware/content validation, and signed NENE-owned delivery are not yet implemented.
+- The worker has not been deployed as a supervised service, and provider contract tests against a controlled staging account have not yet been run.
+- The frontend still uses the legacy provider-job polling contract and has not yet been migrated to NENE generation IDs.
+- Payment checkout, verified payment webhooks, subscriptions, and real-money credit fulfillment remain disabled/not implemented.
+
 ## Required request lifecycle
 
 1. Authenticate the caller and derive the user ID from the verified token.
