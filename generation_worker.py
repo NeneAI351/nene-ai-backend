@@ -11,7 +11,9 @@ import json
 import logging
 import os
 import socket
+import tempfile
 import uuid
+from pathlib import Path
 from decimal import Decimal
 from typing import Any
 
@@ -20,6 +22,7 @@ import httpx
 import database
 import generation_outbox
 import generation_store
+import media_storage
 from wallet_store import wallet_capture, wallet_release
 
 logger = logging.getLogger("nene-ai.worker")
@@ -47,6 +50,52 @@ async def _load_generation(generation_id: str) -> dict[str, Any] | None:
            FROM generations WHERE id=%s""",
         (generation_id,),
     )
+
+
+async def _download_and_store_video(video_url: str, generation_id: str) -> dict[str, Any]:
+    """Fetch one allowlisted provider URL without redirects, then persist privately."""
+    media_storage.validate_provider_media_url(video_url)
+    max_bytes = media_storage.MAX_VIDEO_BYTES
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix="nene-video-", suffix=".mp4", delete=False) as tmp:
+            temp_path = tmp.name
+            total = 0
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(120.0, connect=10.0),
+                follow_redirects=False,
+                trust_env=False,
+            ) as client:
+                async with client.stream("GET", video_url, headers={"Accept": "video/mp4"}) as response:
+                    if response.status_code != 200:
+                        raise RuntimeError("provider_media_download_failed")
+                    content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                    if content_type not in media_storage.ALLOWED_VIDEO_CONTENT_TYPES:
+                        raise RuntimeError("provider_media_content_type_rejected")
+                    declared = response.headers.get("content-length")
+                    if declared:
+                        try:
+                            if int(declared) > max_bytes:
+                                raise RuntimeError("provider_media_too_large")
+                        except ValueError:
+                            raise RuntimeError("provider_media_invalid_length")
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            raise RuntimeError("provider_media_too_large")
+                        tmp.write(chunk)
+            tmp.flush()
+        if total <= 0:
+            raise RuntimeError("provider_media_empty")
+        # Validate MP4 signature and upload outside the event loop; boto3 is synchronous.
+        stored = await asyncio.to_thread(media_storage.upload_video_file, temp_path, generation_id)
+        return stored
+    finally:
+        if temp_path:
+            try:
+                Path(temp_path).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove temporary video file for generation %s", generation_id)
 
 
 async def _dispatch(generation: dict[str, Any]) -> None:
@@ -212,11 +261,18 @@ async def _reconcile(generation: dict[str, Any]) -> int:
         video_url = result.get("video_url") if isinstance(result, dict) else None
         if not isinstance(video_url, str) or not video_url.startswith("https://"):
             raise RuntimeError("provider_success_missing_valid_result")
-        # Persist the URL privately. Public status API must not expose this raw
-        # provider URL; private object storage/signed delivery is a later gate.
+        # Never persist provider URLs as deliverable media. Download without
+        # redirects, validate the MP4 signature/size, and store in a private bucket
+        # before marking the generation successful or capturing credits.
+        stored = await _download_and_store_video(video_url, generation_id)
         await generation_store.transition_generation(
             owner, generation_id, "succeeded",
-            result={"provider_media_url": video_url, "provider": "ltx"},
+            result={
+                "object_key": stored["object_key"],
+                "content_type": stored["content_type"],
+                "size_bytes": stored["size_bytes"],
+                "provider": "ltx",
+            },
         )
         # Re-read the terminal row so settlement recovery uses committed values.
         terminal = await _load_generation(generation_id)
