@@ -126,6 +126,23 @@ def test_delete_source_image_rejects_keys_outside_source_prefix():
         media_storage.delete_source_image("source-images/not-a-uuid/00000000-0000-0000-0000-000000000002.png")
 
 
+def test_source_image_keys_require_canonical_uuids(monkeypatch):
+    owner = "00000000-0000-4000-8000-000000000001"
+    asset = "00000000-0000-4000-8000-000000000002"
+    noncanonical_owner = owner.upper()
+    noncanonical_key = f"source-images/{noncanonical_owner}/{asset}.jpg"
+    with pytest.raises(ValueError, match="Invalid source image object key"):
+        media_storage.create_signed_source_image_url(noncanonical_key)
+    with pytest.raises(ValueError, match="Invalid source image object key"):
+        media_storage.delete_source_image(noncanonical_key)
+
+    noncanonical_asset_key = f"source-images/{owner}/{asset.upper()}.jpg"
+    with pytest.raises(ValueError, match="Invalid source image object key"):
+        media_storage.create_signed_source_image_url(noncanonical_asset_key)
+    with pytest.raises(ValueError, match="Invalid source image object key"):
+        media_storage.delete_source_image(noncanonical_asset_key)
+
+
 def test_delete_source_image_targets_only_validated_key(monkeypatch):
     calls = []
 
