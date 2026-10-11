@@ -15,8 +15,8 @@ def readiness_snapshot(*, production=None, database_ready=None):
     This is a configuration gate, not a live dependency/latency probe. The
     response deliberately reports booleans only and never returns secret values.
     """
+    configured_env = os.getenv("NENE_ENV", "").strip().lower()
     if production is None:
-        configured_env = os.getenv("NENE_ENV", "").strip().lower()
         if configured_env:
             production = configured_env == "production"
         else:
@@ -46,9 +46,22 @@ def readiness_snapshot(*, production=None, database_ready=None):
         "shared_rate_limits_configured": rate_limits_ready,
     }
     ready = all(checks.values()) if production else True
+
+    # Preserve staging as its own reported mode. Previously NENE_ENV=staging
+    # was incorrectly presented as development, which made dashboard checks
+    # confusing while setting up the staging deployment.
+    if production:
+        mode = "production"
+    elif configured_env == "staging":
+        mode = "staging"
+    elif configured_env == "development" or not configured_env:
+        mode = "development"
+    else:
+        mode = "development"
+
     return {
         "ready": ready,
-        "mode": "production" if production else "development",
+        "mode": mode,
         "checks": checks,
     }
 
@@ -61,3 +74,4 @@ def readiness():
         content=snapshot,
         headers={"Cache-Control": "no-store"},
     )
+"
