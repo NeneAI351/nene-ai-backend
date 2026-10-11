@@ -32,6 +32,7 @@ from characters import router as characters_router
 import database
 import generation_store
 import generation_service
+import media_storage
 from generation_service import GenerationRequestConflict, InsufficientCredits
 from generation_outbox import initialize_outbox_schema
 
@@ -230,8 +231,11 @@ def pricing_quote_endpoint(req: PricingQuoteRequest):
 @app.post("/api/image-upload")
 async def image_upload(req: ImageUploadRequest, request: Request):
     await enforce_rate_limit(request, bucket="image-upload", limit=10, window_seconds=60)
+    user_id = None
     if _is_production_environment():
-        await get_authenticated_user_id(request)
+        user_id = await get_authenticated_user_id(request)
+        if not database_configured():
+            raise HTTPException(status_code=503, detail="Private source-image storage requires the durable database.")
     _cleanup_story_storage()
     """Accept supported browser image data URIs and normalize the file type safely.
 
@@ -269,15 +273,40 @@ async def image_upload(req: ImageUploadRequest, request: Request):
         raise HTTPException(status_code=400, detail="Only PNG, JPEG and WEBP images are supported.")
 
     logger.info("Image upload accepted: declared_mime=%s detected_mime=%s bytes=%s", declared_mime, detected_mime, len(raw))
+    if _is_production_environment():
+        # Production source images must never be exposed through /api/temp-images.
+        # The worker mints a short-lived provider-fetch URL only at dispatch.
+        asset_id = str(uuid.uuid4())
+        try:
+            stored = await asyncio.to_thread(media_storage.upload_source_image, raw, user_id, asset_id)
+            await database.execute(
+                """INSERT INTO media_assets
+                   (id,user_id,asset_type,object_key,content_type,size_bytes)
+                   VALUES (%s,%s,'source_image',%s,%s,%s)""",
+                (asset_id, user_id, stored["object_key"], stored["content_type"], stored["size_bytes"]),
+            )
+        except Exception:
+            logger.exception("Private source image could not be stored.")
+            raise HTTPException(status_code=503, detail="Private source-image storage is temporarily unavailable.")
+        return {
+            "ok": True,
+            "source_image_id": asset_id,
+            "mime_type": stored["content_type"],
+            "extension": ext,
+            "private": True,
+        }
+
+    # Development-only compatibility for legacy provider flows. This public
+    # temporary URL is deliberately unavailable in production.
     name = f"{uuid.uuid4().hex}.{ext}"
     path = TEMP_DIR / name
     path.write_bytes(raw)
-    # This public URL is fetched by Pixazo immediately after this request.
     return {
         "ok": True,
         "image_url": f"https://nene-ai.onrender.com/api/temp-images/{name}",
         "mime_type": detected_mime,
         "extension": ext,
+        "private": False,
     }
 
 @app.get("/api/temp-images/{name}")
