@@ -213,9 +213,9 @@ def package_economics() -> dict[str, Any]:
             "ngn_per_credit": round(price / credits, 4),
             "estimated_local_payment_fee_ngn": round(payment_fee, 2),
             "revenue_after_payment_fee_ngn": round(price - payment_fee, 2),
-            "max_direct_cost_for_50_percent_contribution_ngn": round((price - payment_fee) * (1 - TARGET_GROSS_MARGIN), 2),
+            "max_direct_cost_for_target_contribution_ngn": round(max(0, price * (1 - TARGET_GROSS_MARGIN) - payment_fee), 2),
             "max_direct_cost_per_credit_for_target_margin_ngn": round(
-                ((price - payment_fee) * (1 - TARGET_GROSS_MARGIN)) / credits, 4
+                max(0, price * (1 - TARGET_GROSS_MARGIN) - payment_fee) / credits, 4
             ),
         }
     return {
