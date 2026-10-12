@@ -177,6 +177,21 @@ async def _fulfill_verified_transaction(transaction: dict[str, Any]) -> dict[str
             if "NGN" != order["currency"]:
                 raise HTTPException(status_code=400, detail="Paid currency does not match the order.")
             if order["provider_transaction_id"] is not None and tx_id != str(order["provider_transaction_id"]):
+                raise HTTPException(status_code=409, detail="This order is already linked to a different transaction ID.")
+
+            # Serialize claims on the provider transaction ID across different orders.
+            # The unique index remains the final database-level invariant.
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                ("paystack-transaction:" + tx_id,),
+            )
+            claimed = await (await conn.execute(
+                """SELECT reference FROM payment_orders
+                   WHERE provider='paystack' AND provider_transaction_id=%s
+                     AND reference<>%s LIMIT 1""",
+                (tx_id, reference),
+            )).fetchone()
+            if claimed:
                 raise HTTPException(status_code=409, detail="This transaction ID is already linked to another payment.")
             if order["status"] == "success":
                 return {"ok": True, "credited": True, "duplicate": True, "reference": reference}
