@@ -33,6 +33,14 @@ PACKAGES: dict[str, dict[str, Any]] = {
 REFERENCE_RE = re.compile(r"^nene_[0-9a-f]{32}$")
 
 
+def is_valid_webhook_signature(secret: str, raw_body: bytes, signature: str) -> bool:
+    """Constant-time validation of Paystack's SHA-512 raw-body signature."""
+    if not secret or not signature:
+        return False
+    expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha512).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+
 def is_valid_checkout_email(email: str) -> bool:
     """Reject whitespace and malformed address separators before checkout."""
     return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", (email or "").strip()))
@@ -293,8 +301,7 @@ async def paystack_webhook(request: Request, x_paystack_signature: str = Header(
     if not secret:
         raise HTTPException(status_code=503, detail="Payment webhook is not configured.")
     raw = await request.body()
-    expected = hmac.new(secret.encode(), raw, hashlib.sha512).hexdigest()
-    if not x_paystack_signature or not hmac.compare_digest(expected, x_paystack_signature):
+    if not is_valid_webhook_signature(secret, raw, x_paystack_signature):
         raise HTTPException(status_code=401, detail="Invalid payment webhook signature.")
     try:
         event = json.loads(raw)
