@@ -67,3 +67,26 @@ def test_checkout_email_validation_accepts_normal_addresses_and_trims_spaces():
 def test_checkout_email_validation_rejects_whitespace_and_malformed_addresses():
     for email in ("", "not-an-email", "customer @example.com", "customer@example", "@example.com", "customer@@example.com"):
         assert not payments.is_valid_checkout_email(email), email
+
+
+def test_webhook_signature_accepts_exact_raw_body_signature():
+    import hashlib
+    import hmac
+
+    secret = "sk_test_unit_test_secret"
+    raw_body = b'{"event":"charge.success","data":{"reference":"nene_abc"}}'
+    signature = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha512).hexdigest()
+    assert payments.is_valid_webhook_signature(secret, raw_body, signature)
+
+
+def test_webhook_signature_rejects_wrong_secret_body_or_missing_signature():
+    import hashlib
+    import hmac
+
+    secret = "sk_test_unit_test_secret"
+    raw_body = b'{"event":"charge.success","data":{"reference":"nene_abc"}}'
+    signature = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha512).hexdigest()
+    assert not payments.is_valid_webhook_signature("different-secret", raw_body, signature)
+    assert not payments.is_valid_webhook_signature(secret, raw_body + b" ", signature)
+    assert not payments.is_valid_webhook_signature(secret, raw_body, "")
+    assert not payments.is_valid_webhook_signature("", raw_body, signature)
