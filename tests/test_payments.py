@@ -49,3 +49,11 @@ def test_live_mode_has_an_explicit_launch_lock(monkeypatch):
 
     monkeypatch.setenv("PAYSTACK_LIVE_PAYMENTS_APPROVED", "true")
     payments._test_mode_only()
+
+
+def test_package_values_match_pricing_economics():
+    import pricing
+    for package_id, package in payments.PACKAGES.items():
+        economics = pricing.CREDIT_PACKAGES[package_id]
+        assert package["amount_kobo"] == economics["price_ngn"] * 100
+        assert str(package["credits"]) == str(economics["credits"])
