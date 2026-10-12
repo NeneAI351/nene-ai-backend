@@ -24,6 +24,7 @@ from database import (database_configured, start_database, close_database, initi
 from pricing import quote as pricing_quote, catalog as pricing_catalog, package_economics, video_capacity
 from wallet import router as wallet_router
 from payments import router as payments_router, initialize_payment_schema
+from admin_finance import router as admin_finance_router
 from wallet_store import initialize_wallet_schema
 from rate_limits import enforce_rate_limit, close_rate_limit_client
 from auth import get_authenticated_user_id
@@ -91,6 +92,7 @@ async def security_response_headers(request: Request, call_next):
     return response
 app.include_router(wallet_router)
 app.include_router(payments_router)
+app.include_router(admin_finance_router)
 app.include_router(readiness_router)
 app.include_router(projects_router)
 app.include_router(characters_router)
