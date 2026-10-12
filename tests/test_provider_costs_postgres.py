@@ -9,6 +9,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
+import pytest_asyncio
 
 import database
 import provider_costs
@@ -17,7 +18,7 @@ import provider_costs
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def postgres_generation():
     if not os.getenv("DATABASE_URL"):
         pytest.skip("DATABASE_URL is required for PostgreSQL integration tests")
