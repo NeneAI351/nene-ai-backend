@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 
 import database
 from auth import get_authenticated_user_id
@@ -91,7 +91,7 @@ async def initialize_payment_schema() -> None:
 
 class CheckoutRequest(BaseModel):
     package_id: str = Field(min_length=1, max_length=40)
-    email: EmailStr
+    email: str = Field(min_length=5, max_length=254)
 
 
 class VerifyRequest(BaseModel):
@@ -218,6 +218,8 @@ async def list_credit_packages():
 async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authenticated_user_id)):
     await _require_database()
     _test_mode_only()
+    if not re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+", req.email.strip()):
+        raise HTTPException(status_code=400, detail="Enter a valid email address for the payment receipt.")
     package = PACKAGES.get(req.package_id)
     if not package:
         raise HTTPException(status_code=400, detail="Choose a valid NENE AI credit package.")
@@ -237,7 +239,7 @@ async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authe
                 "https://api.paystack.co/transaction/initialize",
                 headers={"Authorization": f"Bearer {paystack_secret()}",
                          "Content-Type": "application/json"},
-                json={"email": str(req.email), "amount": package["amount_kobo"],
+                json={"email": req.email.strip(), "amount": package["amount_kobo"],
                       "currency": "NGN", "reference": reference,
                       "metadata": {"nene_user_id": user_id, "package_id": req.package_id}},
             )
