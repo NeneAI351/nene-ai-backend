@@ -19,6 +19,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest
       - name: Compile payment module and app
-        run: python -m compileall -q payments.py app.py
+        run: python -m compileall -q payments.py app.py pricing.py
       - name: Run payment safety tests
-        run: PYTHONPATH=. pytest -q tests/test_payments.py
+        run: PYTHONPATH=. pytest -q tests/test_payments.py tests/test_pricing.py
