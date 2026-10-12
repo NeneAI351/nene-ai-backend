@@ -103,3 +103,22 @@ async def test_postgres_estimate_never_overwrites_actual_record(postgres_generat
     assert len(rows) == 1
     assert rows[0]["id"] == actual_id
     assert Decimal(str(rows[0]["cost_usd"])) == Decimal("0.91")
+
+
+async def test_concurrent_postgres_retries_create_only_one_estimate(postgres_generation):
+    import asyncio
+
+    generation_id = postgres_generation
+    results = await asyncio.gather(*[
+        provider_costs.record_generation_cost_estimate(
+            make_record(generation_id, str(Decimal("0.70") + Decimal(i) / Decimal("100")))
+        )
+        for i in range(8)
+    ])
+    rows = await fetch_cost_rows(generation_id)
+
+    assert len(results) == 8
+    assert len(rows) == 1
+    assert all(result.get("recorded") is True for result in results)
+    assert sum(result.get("action") == "inserted_estimate" for result in results) == 1
+    assert sum(result.get("action") == "updated_estimate" for result in results) == 7
