@@ -35,7 +35,7 @@ REFERENCE_RE = re.compile(r"^nene_[0-9a-f]{32}$")
 
 def is_valid_checkout_email(email: str) -> bool:
     """Reject whitespace and malformed address separators before checkout."""
-    return bool(re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+", (email or "").strip()))
+    return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", (email or "").strip()))
 
 
 def payment_mode() -> str:
@@ -223,7 +223,7 @@ async def list_credit_packages():
 async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authenticated_user_id)):
     await _require_database()
     _test_mode_only()
-    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", req.email.strip()):
+    if not is_valid_checkout_email(req.email):
         raise HTTPException(status_code=400, detail="Enter a valid email address for the payment receipt.")
     package = PACKAGES.get(req.package_id)
     if not package:
