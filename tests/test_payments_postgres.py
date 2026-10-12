@@ -172,3 +172,93 @@ async def test_postgres_repeated_notification_with_different_transaction_id_is_r
     wallet, ledger = await wallet_snapshot(user_id)
     assert Decimal(wallet["available_credits"]) == Decimal("400")
     assert len(ledger) == 1
+
+
+async def create_generation(user_id):
+    generation_id = str(uuid.uuid4())
+    async with database._pool.connection() as conn:
+        await conn.execute(
+            """INSERT INTO generations
+               (id,user_id,provider,generation_type,status,request)
+               VALUES (%s,%s,'test-provider','text_to_video','queued','{}'::jsonb)""",
+            (generation_id, user_id),
+        )
+        await conn.execute(
+            """INSERT INTO wallets(user_id,available_credits)
+               VALUES (%s,100) ON CONFLICT(user_id) DO UPDATE SET available_credits=100""",
+            (user_id,),
+        )
+        await conn.commit()
+    return generation_id
+
+
+async def test_postgres_wallet_reservation_and_failure_release_restore_balance(payment_db):
+    from wallet_store import wallet_reserve, wallet_release
+
+    user_id = payment_db
+    generation_id = await create_generation(user_id)
+    reserved = await wallet_reserve(user_id, Decimal("30"), generation_id, "test-failed-generation")
+    assert reserved["available_credits"] == "70"
+    assert reserved["reserved_credits"] == "30"
+
+    released = await wallet_release(user_id, Decimal("30"), generation_id, "test-failed-generation")
+    assert released["available_credits"] == "100"
+    assert released["reserved_credits"] == "0"
+
+    wallet = await database.fetch_one(
+        "SELECT available_credits,reserved_credits FROM wallets WHERE user_id=%s", (user_id,)
+    )
+    generation = await database.fetch_one(
+        "SELECT credits_reserved,credits_charged FROM generations WHERE id=%s", (generation_id,)
+    )
+    assert Decimal(wallet["available_credits"]) == Decimal("100")
+    assert Decimal(wallet["reserved_credits"]) == Decimal("0")
+    assert Decimal(generation["credits_reserved"]) == Decimal("30")
+    assert Decimal(generation["credits_charged"]) == Decimal("0")
+
+
+async def test_postgres_duplicate_reservation_operation_does_not_deduct_twice(payment_db):
+    from wallet_store import wallet_reserve
+
+    user_id = payment_db
+    generation_id = await create_generation(user_id)
+    first, second = await asyncio.gather(
+        wallet_reserve(user_id, Decimal("25"), generation_id, "same-reservation"),
+        wallet_reserve(user_id, Decimal("25"), generation_id, "same-reservation"),
+    )
+    assert sorted([first.get("duplicate", False), second.get("duplicate", False)]) == [False, True]
+    wallet = await database.fetch_one(
+        "SELECT available_credits,reserved_credits FROM wallets WHERE user_id=%s", (user_id,)
+    )
+    ledger = await database.fetch_all(
+        "SELECT operation_key FROM credit_ledger WHERE user_id=%s AND operation_key=%s",
+        (user_id, "reserve:same-reservation"),
+    )
+    assert Decimal(wallet["available_credits"]) == Decimal("75")
+    assert Decimal(wallet["reserved_credits"]) == Decimal("25")
+    assert len(ledger) == 1
+
+
+async def test_postgres_capture_consumes_reserved_credits_once(payment_db):
+    from wallet_store import wallet_reserve, wallet_capture
+
+    user_id = payment_db
+    generation_id = await create_generation(user_id)
+    await wallet_reserve(user_id, Decimal("40"), generation_id, "successful-generation")
+    captured = await wallet_capture(user_id, Decimal("40"), generation_id, "successful-generation")
+    duplicate = await wallet_capture(user_id, Decimal("40"), generation_id, "successful-generation")
+
+    wallet = await database.fetch_one(
+        "SELECT available_credits,reserved_credits,lifetime_consumed FROM wallets WHERE user_id=%s",
+        (user_id,),
+    )
+    generation = await database.fetch_one(
+        "SELECT credits_reserved,credits_charged FROM generations WHERE id=%s", (generation_id,)
+    )
+    assert captured["duplicate"] is False
+    assert duplicate["duplicate"] is True
+    assert Decimal(wallet["available_credits"]) == Decimal("60")
+    assert Decimal(wallet["reserved_credits"]) == Decimal("0")
+    assert Decimal(wallet["lifetime_consumed"]) == Decimal("40")
+    assert Decimal(generation["credits_reserved"]) == Decimal("40")
+    assert Decimal(generation["credits_charged"]) == Decimal("40")
