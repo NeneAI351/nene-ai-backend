@@ -80,6 +80,7 @@ async def initialize_payment_schema() -> None:
                     id UUID PRIMARY KEY,
                     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     provider TEXT NOT NULL DEFAULT 'paystack',
+                    mode TEXT NOT NULL DEFAULT 'test' CHECK (mode IN ('test','live')),
                     reference TEXT NOT NULL UNIQUE,
                     package_id TEXT NOT NULL,
                     amount_kobo BIGINT NOT NULL CHECK (amount_kobo > 0),
@@ -271,9 +272,9 @@ async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authe
         async with conn.transaction():
             await conn.execute(
                 """INSERT INTO payment_orders
-                   (id,user_id,reference,package_id,amount_kobo,currency,credits,status)
-                   VALUES (%s,%s,%s,%s,%s,'NGN',%s,'initialized')""",
-                (str(uuid.uuid4()), user_id, reference, req.package_id,
+                   (id,user_id,provider,mode,reference,package_id,amount_kobo,currency,credits,status)
+                   VALUES (%s,%s,'paystack',%s,%s,%s,%s,'NGN',%s,'initialized')""",
+                (str(uuid.uuid4()), user_id, payment_mode(), reference, req.package_id,
                  package["amount_kobo"], package["credits"]),
             )
     try:
