@@ -167,3 +167,53 @@ async def test_cost_persistence_failure_never_marks_generation_succeeded(monkeyp
 
 async def _async_return(value):
     return value
+
+
+@pytest.mark.asyncio
+async def test_cost_persistence_failure_schedules_outbox_retry(monkeypatch):
+    calls = []
+    generation_id = "00000000-0000-4000-8000-000000000001"
+
+    async def load(_generation_id):
+        return {
+            "id": generation_id,
+            "user_id": "00000000-0000-4000-8000-000000000002",
+            "provider": "ltx",
+            "status": "running",
+            "provider_job_id": "job-test",
+        }
+
+    async def reconcile(_generation):
+        raise RuntimeError("database_temporarily_unavailable")
+
+    async def retry(event_id, worker_id, error_code, **kwargs):
+        calls.append(("retry", event_id, worker_id, error_code, kwargs))
+
+    async def complete(*args):
+        calls.append(("complete", *args))
+
+    monkeypatch.setattr(generation_worker, "_load_generation", load)
+    monkeypatch.setattr(generation_worker, "_reconcile", reconcile)
+    monkeypatch.setattr(generation_worker.generation_outbox, "retry_event", retry)
+    monkeypatch.setattr(generation_worker.generation_outbox, "complete_event", complete)
+
+    await generation_worker.process_event(
+        {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "generation_id": generation_id,
+            "event_type": "reconcile_generation",
+            "lease_token": "00000000-0000-4000-8000-000000000004",
+            "attempts": 1,
+        },
+        "test-worker",
+    )
+
+    assert len(calls) == 1
+    action, event_id, worker_id, error_code, kwargs = calls[0]
+    assert action == "retry"
+    assert event_id == "00000000-0000-4000-8000-000000000003"
+    assert worker_id == "test-worker"
+    assert error_code == "database_temporarily_unavailable"
+    assert kwargs["delay_seconds"] == 2
+    assert kwargs["max_attempts"] == 12
+    assert kwargs["lease_token"] == "00000000-0000-4000-8000-000000000004"
