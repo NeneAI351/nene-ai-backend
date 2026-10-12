@@ -174,7 +174,7 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
         "estimated_payment_fee_allocated_ngn": round(estimated_fee_ngn, 2),
         "estimated_contribution_after_provider_buffer_and_payment_fee_ngn": round(contribution_ngn, 2),
         "estimated_contribution_margin_after_payment_fee": round(contribution_margin, 4),
-        "payment_fee_note": "Conservative planning allocation: percentage fee plus Starter fixed fee spread over Starter credits. Actual package/order fees must be reconciled from provider records.",
+        "payment_fee_note": "Conservative planning allocation: percentage fee plus Starter fixed fee spread over Starter credits. actual package/order fees must be reconciled from provider records.",
         "cost_basis": rate["basis"],
         "estimated_provider_cost": rate["estimated"],
         "warning": "Estimated retail-equivalent provider cost; replace with actual usage/invoice cost when available." if rate["estimated"] else None,
