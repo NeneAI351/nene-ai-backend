@@ -327,6 +327,9 @@ async def verify_checkout(req: VerifyRequest, user_id: str = Depends(get_authent
 
 @router.post("/webhook")
 async def paystack_webhook(request: Request, x_paystack_signature: str = Header(default="")):
+    # Apply the same mode/key/launch gate to inbound payment events as checkout
+    # and verification. A webhook must never bypass the live-payment release lock.
+    _test_mode_only()
     secret = paystack_secret()
     if not secret:
         raise HTTPException(status_code=503, detail="Payment webhook is not configured.")
