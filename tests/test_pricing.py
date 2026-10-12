@@ -29,3 +29,21 @@ def test_quote_has_positive_credit_reserve_and_expected_margin():
     assert quote["provider_cost_usd"] > 0
     assert quote["recommended_customer_value_usd"] >= quote["provider_cost_with_risk_buffer_usd"] / (1 - quote["target_gross_margin"])
     assert math.isfinite(quote["realized_margin"])
+
+
+def test_quote_includes_fee_aware_ngn_price_floor():
+    quote = pricing.quote("ltx", "ltx-2-5-fast", "1080p", 6)
+    assert quote["minimum_single_purchase_price_ngn"] > 0
+    assert quote["estimated_paystack_local_fee_ngn"] >= 0
+    assert quote["estimated_contribution_after_provider_buffer_and_payment_fee_ngn"] >= (
+        quote["minimum_single_purchase_price_ngn"] * quote["target_gross_margin"] - 2
+    )
+    assert quote["fx_reference_ngn_per_usd"] > 0
+    assert "package purchases" in quote["payment_fee_note"]
+
+
+def test_quote_fee_aware_price_accounts_for_provider_risk_buffer():
+    quote = pricing.quote("ltx", "ltx-2-5-fast", "1080p", 6)
+    assert quote["minimum_single_purchase_price_ngn"] > (
+        quote["provider_cost_usd"] * quote["fx_reference_ngn_per_usd"]
+    )
