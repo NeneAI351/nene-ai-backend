@@ -66,3 +66,29 @@ def test_credit_charge_protects_margin_using_lowest_package_credit_value():
     quote = pricing.quote("ltx", "ltx-2-5-fast", "1080p", 6)
     assert quote["credit_face_value_ngn"] == pytest.approx(50000 / 4500)
     assert quote["estimated_contribution_margin_after_payment_fee"] >= 0.50
+
+
+def test_video_capacity_covers_supported_ltx_choices_and_package_limits():
+    report = pricing.video_capacity()
+    assert report["target_contribution_margin"] == pytest.approx(0.50)
+    assert report["choices"]
+    assert len(report["choices"]) == 24
+    for choice in report["choices"]:
+        assert choice["credits_per_video"] > 0
+        assert choice["estimated_provider_cost_with_buffer_ngn"] > 0
+        assert choice["estimated_contribution_margin"] >= 0.50
+        for package_id, package in pricing.CREDIT_PACKAGES.items():
+            assert choice["package_video_capacity"][package_id] == (
+                package["credits"] // choice["credits_per_video"]
+            )
+
+
+def test_video_capacity_does_not_promise_a_video_when_credits_are_insufficient():
+    report = pricing.video_capacity()
+    expensive = next(
+        choice for choice in report["choices"]
+        if choice["model"] == "ltx-2-5-pro"
+        and choice["resolution"] == "4k"
+        and choice["duration_seconds"] == 10
+    )
+    assert expensive["package_video_capacity"]["starter"] == 0
