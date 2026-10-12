@@ -129,3 +129,19 @@ def test_verified_payment_validator_rejects_malformed_success_transactions(overr
         payments.validate_verified_transaction(_valid_transaction(**overrides))
     assert exc.value.status_code == 400
     assert message.lower() in str(exc.value.detail).lower()
+
+
+@pytest.mark.asyncio
+async def test_webhook_obeys_live_payment_launch_gate(monkeypatch):
+    class FakeRequest:
+        async def body(self):
+            return b'{}'
+
+    def locked_gate():
+        raise HTTPException(status_code=503, detail="Live payments are locked.")
+
+    monkeypatch.setattr(payments, "_test_mode_only", locked_gate)
+    with pytest.raises(HTTPException) as exc:
+        await payments.paystack_webhook(FakeRequest(), "")
+    assert exc.value.status_code == 503
+    assert "locked" in str(exc.value.detail).lower()
