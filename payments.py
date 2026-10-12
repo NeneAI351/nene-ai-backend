@@ -218,7 +218,7 @@ async def list_credit_packages():
 async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authenticated_user_id)):
     await _require_database()
     _test_mode_only()
-    if not re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+", req.email.strip()):
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", req.email.strip()):
         raise HTTPException(status_code=400, detail="Enter a valid email address for the payment receipt.")
     package = PACKAGES.get(req.package_id)
     if not package:
