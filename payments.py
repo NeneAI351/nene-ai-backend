@@ -26,9 +26,9 @@ router = APIRouter(prefix="/api/payments", tags=["payments"])
 
 # Fixed server-owned packages; clients cannot choose an amount or credit count.
 PACKAGES: dict[str, dict[str, Any]] = {
-    "starter": {"amount_kobo": 50000, "credits": Decimal("5000"), "label": "Starter"},
-    "creator": {"amount_kobo": 150000, "credits": Decimal("16000"), "label": "Creator"},
-    "studio": {"amount_kobo": 500000, "credits": Decimal("60000"), "label": "Studio"},
+    "starter": {"amount_kobo": 500000, "credits": Decimal("400"), "label": "Starter"},
+    "creator": {"amount_kobo": 1500000, "credits": Decimal("1300"), "label": "Creator"},
+    "studio": {"amount_kobo": 5000000, "credits": Decimal("4500"), "label": "Studio"},
 }
 REFERENCE_RE = re.compile(r"^nene_[0-9a-f]{32}$")
 
