@@ -225,3 +225,44 @@ def package_economics() -> dict[str, Any]:
         "packages": packages,
         "note": "Estimates exclude taxes, hosting, storage, support, marketing, refunds not recovered from providers, and other overhead. Actual provider and payment records must replace planning rates.",
     }
+
+
+
+def video_capacity() -> dict[str, Any]:
+    """Calculate maximum whole videos per package for supported LTX choices.
+
+    Capacity is theoretical and assumes all package credits are spent on one
+    video type. It is not a promise of fixed video counts.
+    """
+    choices: list[dict[str, Any]] = []
+    for model in ("ltx-2-5-fast", "ltx-2-5-pro"):
+        for resolution in ("720p", "1080p", "1440p", "4k"):
+            if not get_rate("ltx", model, resolution):
+                continue
+            for duration in (6, 8, 10):
+                quote_data = quote("ltx", model, resolution, duration)
+                credits = int(quote_data["recommended_credits"])
+                choices.append({
+                    "provider": "ltx",
+                    "model": model,
+                    "resolution": resolution,
+                    "duration_seconds": duration,
+                    "credits_per_video": credits,
+                    "estimated_provider_cost_with_buffer_ngn": quote_data["provider_cost_with_risk_buffer_ngn"],
+                    "estimated_revenue_allocated_per_video_ngn": quote_data["recommended_credit_value_ngn"],
+                    "estimated_contribution_margin": quote_data["estimated_contribution_margin_after_payment_fee"],
+                    "package_video_capacity": {
+                        package_id: int(package["credits"]) // credits
+                        for package_id, package in CREDIT_PACKAGES.items()
+                    },
+                    "cost_basis": quote_data["cost_basis"],
+                    "estimated_provider_cost": quote_data["estimated_provider_cost"],
+                })
+    return {
+        "target_contribution_margin": TARGET_GROSS_MARGIN,
+        "fx_reference_ngn_per_usd": USD_TO_NGN,
+        "provider_risk_buffer": RISK_BUFFER,
+        "packages": CREDIT_PACKAGES,
+        "choices": choices,
+        "note": "Maximum whole-video count when spending all package credits on one video type. Actual provider invoice, FX, payment fee, and mixed usage can change results. Taxes and general overhead are excluded.",
+    }
