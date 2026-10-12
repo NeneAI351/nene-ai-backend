@@ -31,19 +31,38 @@ def test_quote_has_positive_credit_reserve_and_expected_margin():
     assert math.isfinite(quote["realized_margin"])
 
 
-def test_quote_includes_fee_aware_ngn_price_floor():
+def test_quote_includes_fee_aware_credit_cost_and_margin():
     quote = pricing.quote("ltx", "ltx-2-5-fast", "1080p", 6)
-    assert quote["minimum_single_purchase_price_ngn"] > 0
-    assert quote["estimated_paystack_local_fee_ngn"] >= 0
+    assert quote["recommended_credits"] > 0
+    assert quote["provider_cost_with_risk_buffer_ngn"] > 0
+    assert quote["estimated_payment_fee_allocated_ngn"] > 0
     assert quote["estimated_contribution_after_provider_buffer_and_payment_fee_ngn"] >= (
-        quote["minimum_single_purchase_price_ngn"] * quote["target_gross_margin"] - 2
+        quote["estimated_package_revenue_ngn_allocated_to_generation"] * quote["target_gross_margin"] - 2
     )
     assert quote["fx_reference_ngn_per_usd"] > 0
-    assert "package purchases" in quote["payment_fee_note"]
+    assert "actual package/order fees" in quote["payment_fee_note"]
 
 
 def test_quote_fee_aware_price_accounts_for_provider_risk_buffer():
     quote = pricing.quote("ltx", "ltx-2-5-fast", "1080p", 6)
-    assert quote["minimum_single_purchase_price_ngn"] > (
-        quote["provider_cost_usd"] * quote["fx_reference_ngn_per_usd"]
-    )
+    assert quote["recommended_credit_value_ngn"] > quote["provider_cost_with_risk_buffer_ngn"]
+
+
+
+def test_package_economics_matches_payment_package_values():
+    report = pricing.package_economics()
+    assert report["target_contribution_margin"] == pytest.approx(0.50)
+    assert report["packages"]["starter"]["price_ngn"] == 5000
+    assert report["packages"]["starter"]["credits"] == 400
+    assert report["packages"]["creator"]["price_ngn"] == 15000
+    assert report["packages"]["creator"]["credits"] == 1300
+    assert report["packages"]["studio"]["price_ngn"] == 50000
+    assert report["packages"]["studio"]["credits"] == 4500
+    for package in report["packages"].values():
+        assert package["max_direct_cost_for_50_percent_contribution_ngn"] > 0
+
+
+def test_credit_charge_protects_margin_using_lowest_package_credit_value():
+    quote = pricing.quote("ltx", "ltx-2-5-fast", "1080p", 6)
+    assert quote["credit_face_value_ngn"] == pytest.approx(50000 / 4500)
+    assert quote["estimated_contribution_margin_after_payment_fee"] >= 0.50
