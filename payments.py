@@ -33,6 +33,11 @@ PACKAGES: dict[str, dict[str, Any]] = {
 REFERENCE_RE = re.compile(r"^nene_[0-9a-f]{32}$")
 
 
+def is_valid_checkout_email(email: str) -> bool:
+    """Reject whitespace and malformed address separators before checkout."""
+    return bool(re.fullmatch(r"[^\\s@]+@[^\\s@]+\\.[^\\s@]+", (email or "").strip()))
+
+
 def payment_mode() -> str:
     return os.getenv("PAYSTACK_MODE", "test").strip().lower()
 
