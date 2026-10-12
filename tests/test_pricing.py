@@ -59,7 +59,7 @@ def test_package_economics_matches_payment_package_values():
     assert report["packages"]["studio"]["price_ngn"] == 50000
     assert report["packages"]["studio"]["credits"] == 4500
     for package in report["packages"].values():
-        assert package["max_direct_cost_for_50_percent_contribution_ngn"] > 0
+        assert package["max_direct_cost_for_target_contribution_ngn"] > 0
 
 
 def test_credit_charge_protects_margin_using_lowest_package_credit_value():
