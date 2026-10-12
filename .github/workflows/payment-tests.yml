@@ -36,7 +36,7 @@ jobs:
           pip install -r requirements.txt pytest pytest-asyncio
       - name: Compile payment module and app
         run: python -m compileall -q payments.py app.py pricing.py provider_costs.py generation_worker.py
-      - name: Run payment safety tests
-        run: PYTHONPATH=. pytest -q tests/test_payments.py tests/test_pricing.py tests/test_provider_costs.py
+      - name: Run payment and worker safety tests
+        run: PYTHONPATH=. pytest -q tests/test_payments.py tests/test_pricing.py tests/test_provider_costs.py tests/test_generation_worker_unit.py tests/test_media_storage.py
       - name: Run real PostgreSQL provider-cost integration tests
         run: PYTHONPATH=. pytest -q tests/test_provider_costs_postgres.py
