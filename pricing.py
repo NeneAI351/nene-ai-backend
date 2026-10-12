@@ -16,6 +16,16 @@ NENE_CREDIT_USD = float(os.getenv("NENE_CREDIT_USD", "0.01"))
 TARGET_GROSS_MARGIN = float(os.getenv("NENE_TARGET_GROSS_MARGIN", "0.70"))
 RISK_BUFFER = float(os.getenv("NENE_PROVIDER_RISK_BUFFER", "0.10"))
 
+# Planning reference only. Refresh against the rate used to settle provider
+# invoices before enabling live sales. Paystack's local fee schedule can change.
+USD_TO_NGN = float(os.getenv("NENE_USD_TO_NGN", "1332.49"))
+PAYSTACK_LOCAL_PERCENT = float(os.getenv("NENE_PAYSTACK_LOCAL_PERCENT", "0.015"))
+PAYSTACK_LOCAL_FIXED_NGN = float(os.getenv("NENE_PAYSTACK_LOCAL_FIXED_NGN", "100"))
+PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN = float(
+    os.getenv("NENE_PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN", "2500")
+)
+PAYSTACK_LOCAL_FEE_CAP_NGN = float(os.getenv("NENE_PAYSTACK_LOCAL_FEE_CAP_NGN", "2000"))
+
 # Exact public API rates where the provider publishes them directly.
 RATES = [
     # LTX direct API — exact published rates.
@@ -109,6 +119,12 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
         "recommended_customer_value_usd": round(revenue, 4),
         "expected_profit_usd": round(profit, 4),
         "realized_margin": round(realized_margin, 4),
+        "fx_reference_ngn_per_usd": USD_TO_NGN,
+        "minimum_single_purchase_price_ngn": minimum_price_ngn,
+        "estimated_paystack_local_fee_ngn": estimated_payment_fee_ngn,
+        "estimated_contribution_after_provider_buffer_and_payment_fee_ngn": round(expected_contribution_ngn, 2),
+        "estimated_contribution_margin_after_payment_fee": round(realized_contribution_margin_ngn, 4),
+        "payment_fee_note": "Estimated local-card fee for a standalone checkout; package purchases must allocate one fee across all credits in the order.",
         "cost_basis": rate["basis"],
         "estimated_provider_cost": rate["estimated"],
         "warning": "Estimated retail-equivalent provider cost; replace with actual usage/invoice cost when available." if rate["estimated"] else None,
