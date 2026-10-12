@@ -57,3 +57,13 @@ def test_package_values_match_pricing_economics():
         economics = pricing.CREDIT_PACKAGES[package_id]
         assert package["amount_kobo"] == economics["price_ngn"] * 100
         assert str(package["credits"]) == str(economics["credits"])
+
+
+def test_checkout_email_validation_accepts_normal_addresses_and_trims_spaces():
+    assert payments.is_valid_checkout_email("customer@example.com")
+    assert payments.is_valid_checkout_email("  customer.name+video@example.co.ng  ")
+
+
+def test_checkout_email_validation_rejects_whitespace_and_malformed_addresses():
+    for email in ("", "not-an-email", "customer @example.com", "customer@example", "@example.com", "customer@@example.com"):
+        assert not payments.is_valid_checkout_email(email), email
