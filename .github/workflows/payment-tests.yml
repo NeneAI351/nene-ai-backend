@@ -9,6 +9,22 @@ on:
 jobs:
   payment-safety:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: nene_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d nene_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nene_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -22,3 +38,5 @@ jobs:
         run: python -m compileall -q payments.py app.py pricing.py provider_costs.py generation_worker.py
       - name: Run payment safety tests
         run: PYTHONPATH=. pytest -q tests/test_payments.py tests/test_pricing.py tests/test_provider_costs.py
+      - name: Run real PostgreSQL provider-cost integration tests
+        run: PYTHONPATH=. pytest -q tests/test_provider_costs_postgres.py
