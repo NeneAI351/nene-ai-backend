@@ -49,11 +49,14 @@ async def owner_finance_summary(user_id: str = Depends(get_authenticated_user_id
         async with conn.cursor() as cur:
             await cur.execute("""
                 SELECT
-                    COALESCE(SUM(amount_kobo) FILTER (WHERE status = 'success'), 0)::bigint AS collected_kobo,
-                    COALESCE(SUM(amount_kobo) FILTER (WHERE status IN ('initialized','pending')), 0)::bigint AS pending_kobo,
-                    COUNT(*) FILTER (WHERE status = 'success')::bigint AS successful_orders,
-                    COUNT(*) FILTER (WHERE status IN ('initialized','pending'))::bigint AS pending_orders,
-                    COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed_orders
+                    COALESCE(SUM(amount_kobo) FILTER (WHERE mode = 'live' AND status = 'success'), 0)::bigint AS collected_kobo,
+                    COALESCE(SUM(amount_kobo) FILTER (WHERE mode = 'live' AND status IN ('initialized','pending')), 0)::bigint AS pending_kobo,
+                    COUNT(*) FILTER (WHERE mode = 'live' AND status = 'success')::bigint AS successful_orders,
+                    COUNT(*) FILTER (WHERE mode = 'live' AND status IN ('initialized','pending'))::bigint AS pending_orders,
+                    COUNT(*) FILTER (WHERE mode = 'live' AND status = 'failed')::bigint AS failed_orders,
+                    COALESCE(SUM(amount_kobo) FILTER (WHERE mode = 'test' AND status = 'success'), 0)::bigint AS test_collected_kobo,
+                    COUNT(*) FILTER (WHERE mode = 'test' AND status = 'success')::bigint AS test_successful_orders,
+                    COUNT(*) FILTER (WHERE mode = 'test' AND status IN ('initialized','pending'))::bigint AS test_pending_orders
                 FROM payment_orders
             """)
             payments = await cur.fetchone()
@@ -66,7 +69,7 @@ async def owner_finance_summary(user_id: str = Depends(get_authenticated_user_id
             """)
             costs = await cur.fetchone()
             await cur.execute("""
-                SELECT reference, package_id, amount_kobo, currency, status, paid_at, created_at
+                SELECT reference, package_id, amount_kobo, currency, mode, status, paid_at, created_at
                 FROM payment_orders
                 ORDER BY created_at DESC
                 LIMIT 20
@@ -84,6 +87,13 @@ async def owner_finance_summary(user_id: str = Depends(get_authenticated_user_id
             "successful_orders": int(payments["successful_orders"] or 0),
             "pending_orders": int(payments["pending_orders"] or 0),
             "failed_orders": int(payments["failed_orders"] or 0),
+            "basis": "live-mode orders only; excludes test transactions",
+        },
+        "test_mode": {
+            "collected_ngn": _money(Decimal(int(payments["test_collected_kobo"] or 0)) / Decimal(100)),
+            "successful_orders": int(payments["test_successful_orders"] or 0),
+            "pending_orders": int(payments["test_pending_orders"] or 0),
+            "is_real_revenue": False,
         },
         "generation_costs": {
             "estimated_usd": _money(costs["estimated_cost_usd"]),
@@ -95,6 +105,7 @@ async def owner_finance_summary(user_id: str = Depends(get_authenticated_user_id
         "contribution_profit_ngn": None,
         "payouts_enabled": False,
         "limitations": [
+            "The live collections total excludes test-mode transactions; test totals are shown separately and are not real revenue.",
             "Gross collections are not the same as cleared bank funds.",
             "Provider costs are reported in USD and are not converted to NGN.",
             "Payment processing fees, refunds, taxes, chargebacks, and fixed operating costs must be reconciled before profit or withdrawable balance can be calculated.",
