@@ -143,6 +143,13 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
     revenue = credits * NENE_CREDIT_USD
     profit = revenue - raw_cost
     realized_margin = (profit / revenue) if revenue else 0.0
+    allocated_revenue_ngn = credits * CREDIT_VALUE_NGN
+    estimated_fee_ngn = (
+        allocated_revenue_ngn * PAYSTACK_LOCAL_PERCENT
+        + credits * FIXED_FEE_PER_CREDIT_NGN
+    )
+    contribution_ngn = allocated_revenue_ngn - estimated_fee_ngn - buffered_cost_ngn
+    contribution_margin = contribution_ngn / allocated_revenue_ngn if allocated_revenue_ngn else 0.0
     return {
         "provider": provider,
         "model": rate["model"],
@@ -161,11 +168,11 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
         "expected_profit_usd": round(profit, 4),
         "realized_margin": round(realized_margin, 4),
         "fx_reference_ngn_per_usd": USD_TO_NGN,
-        "minimum_single_purchase_price_ngn": minimum_price_ngn,
-        "estimated_paystack_local_fee_ngn": estimated_payment_fee_ngn,
-        "estimated_contribution_after_provider_buffer_and_payment_fee_ngn": round(expected_contribution_ngn, 2),
-        "estimated_contribution_margin_after_payment_fee": round(realized_contribution_margin_ngn, 4),
-        "payment_fee_note": "Estimated local-card fee for a standalone checkout; package purchases must allocate one fee across all credits in the order.",
+        "estimated_package_revenue_ngn_allocated_to_generation": round(allocated_revenue_ngn, 2),
+        "estimated_payment_fee_allocated_ngn": round(estimated_fee_ngn, 2),
+        "estimated_contribution_after_provider_buffer_and_payment_fee_ngn": round(contribution_ngn, 2),
+        "estimated_contribution_margin_after_payment_fee": round(contribution_margin, 4),
+        "payment_fee_note": "Conservative planning allocation: percentage fee plus Starter fixed fee spread over Starter credits. Actual package/order fees must be reconciled from provider records.",
         "cost_basis": rate["basis"],
         "estimated_provider_cost": rate["estimated"],
         "warning": "Estimated retail-equivalent provider cost; replace with actual usage/invoice cost when available." if rate["estimated"] else None,
@@ -180,4 +187,39 @@ def catalog() -> dict[str, Any]:
         "credit_face_value_ngn": round(CREDIT_VALUE_NGN, 4),
         "credit_packages": CREDIT_PACKAGES,
         "rates": RATES,
+    }
+
+
+def package_economics() -> dict[str, Any]:
+    """Show package credit economics and theoretical whole-video counts.
+
+    These are maximum counts for a single selected model/resolution/duration;
+    they do not promise a fixed number of videos because users can mix options.
+    """
+    packages: dict[str, Any] = {}
+    for package_id, package in CREDIT_PACKAGES.items():
+        price = float(package["price_ngn"])
+        credits = int(package["credits"])
+        payment_fee = min(
+            price * PAYSTACK_LOCAL_PERCENT
+            + (0 if price < PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN else PAYSTACK_LOCAL_FIXED_NGN),
+            PAYSTACK_LOCAL_FEE_CAP_NGN,
+        )
+        packages[package_id] = {
+            "price_ngn": price,
+            "credits": credits,
+            "ngn_per_credit": round(price / credits, 4),
+            "estimated_local_payment_fee_ngn": round(payment_fee, 2),
+            "revenue_after_payment_fee_ngn": round(price - payment_fee, 2),
+            "max_direct_cost_for_50_percent_contribution_ngn": round((price - payment_fee) * (1 - TARGET_GROSS_MARGIN), 2),
+            "max_direct_cost_per_credit_for_target_margin_ngn": round(
+                ((price - payment_fee) * (1 - TARGET_GROSS_MARGIN)) / credits, 4
+            ),
+        }
+    return {
+        "target_contribution_margin": TARGET_GROSS_MARGIN,
+        "fx_reference_ngn_per_usd": USD_TO_NGN,
+        "provider_risk_buffer": RISK_BUFFER,
+        "packages": packages,
+        "note": "Estimates exclude taxes, hosting, storage, support, marketing, refunds not recovered from providers, and other overhead. Actual provider and payment records must replace planning rates.",
     }
