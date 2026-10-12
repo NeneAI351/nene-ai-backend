@@ -142,16 +142,19 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
     if allowed_cost_per_credit_ngn <= 0:
         raise ValueError("Credit package economics cannot support the requested margin")
     credits = math.ceil(buffered_cost_ngn / allowed_cost_per_credit_ngn)
-    revenue = credits * NENE_CREDIT_USD
-    profit = revenue - raw_cost
-    realized_margin = (profit / revenue) if revenue else 0.0
     allocated_revenue_ngn = credits * CREDIT_VALUE_NGN
+    # Derive USD customer value from the same conservative package economics
+    # used to set credits. A separate fixed USD-per-credit assumption can
+    # otherwise overstate revenue and profit when NGN package pricing differs.
+    revenue = allocated_revenue_ngn / USD_TO_NGN
     estimated_fee_ngn = (
         allocated_revenue_ngn * PAYSTACK_LOCAL_PERCENT
         + credits * FIXED_FEE_PER_CREDIT_NGN
     )
     contribution_ngn = allocated_revenue_ngn - estimated_fee_ngn - buffered_cost_ngn
     contribution_margin = contribution_ngn / allocated_revenue_ngn if allocated_revenue_ngn else 0.0
+    profit = contribution_ngn / USD_TO_NGN
+    realized_margin = contribution_margin
     return {
         "provider": provider,
         "model": rate["model"],
