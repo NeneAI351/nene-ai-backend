@@ -198,12 +198,12 @@ async def test_postgres_wallet_reservation_and_failure_release_restore_balance(p
     user_id = payment_db
     generation_id = await create_generation(user_id)
     reserved = await wallet_reserve(user_id, Decimal("30"), generation_id, "test-failed-generation")
-    assert reserved["available_credits"] == "70"
-    assert reserved["reserved_credits"] == "30"
+    assert Decimal(reserved["available_credits"]) == Decimal("70")
+    assert Decimal(reserved["reserved_credits"]) == Decimal("30")
 
     released = await wallet_release(user_id, Decimal("30"), generation_id, "test-failed-generation")
-    assert released["available_credits"] == "100"
-    assert released["reserved_credits"] == "0"
+    assert Decimal(released["available_credits"]) == Decimal("100")
+    assert Decimal(released["reserved_credits"]) == Decimal("0")
 
     wallet = await database.fetch_one(
         "SELECT available_credits,reserved_credits FROM wallets WHERE user_id=%s", (user_id,)
