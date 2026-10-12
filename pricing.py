@@ -134,9 +134,11 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
     allocated_payment_fee_ngn = (
         credit_revenue_ngn * PAYSTACK_LOCAL_PERCENT + FIXED_FEE_PER_CREDIT_NGN
     )
+    # Target contribution is a percentage of customer revenue after fees:
+    # revenue - allocated fee - provider cost >= margin * revenue.
     allowed_cost_per_credit_ngn = (
-        credit_revenue_ngn - allocated_payment_fee_ngn
-    ) * (1 - margin)
+        credit_revenue_ngn * (1 - margin) - allocated_payment_fee_ngn
+    )
     if allowed_cost_per_credit_ngn <= 0:
         raise ValueError("Credit package economics cannot support the requested margin")
     credits = math.ceil(buffered_cost_ngn / allowed_cost_per_credit_ngn)
