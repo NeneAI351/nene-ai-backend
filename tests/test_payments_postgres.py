@@ -76,8 +76,8 @@ async def wallet_snapshot(user_id):
     )
     ledger = await database.fetch_all(
         """SELECT entry_type,amount,operation_key,metadata FROM credit_ledger
-           WHERE user_id=%s AND operation_key LIKE 'payment:%'""",
-        (user_id,),
+           WHERE user_id=%s AND operation_key LIKE %s""",
+        (user_id, "payment:%"),
     )
     return row, ledger
 
