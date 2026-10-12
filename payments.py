@@ -95,6 +95,7 @@ async def initialize_payment_schema() -> None:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
+                ALTER TABLE payment_orders ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'test' CHECK (mode IN ('test','live'));
                 CREATE INDEX IF NOT EXISTS idx_payment_orders_user_created
                     ON payment_orders(user_id, created_at DESC);
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_orders_provider_tx
