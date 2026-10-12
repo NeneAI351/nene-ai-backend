@@ -133,18 +133,33 @@ async def _paystack_get(reference: str) -> dict[str, Any]:
     return payload["data"]
 
 
-async def _fulfill_verified_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
+def validate_verified_transaction(transaction: dict[str, Any]) -> tuple[str, str, int] | None:
+    """Validate provider transaction fields before touching wallet state.
+
+    Returns None for a non-success event; returns (reference, transaction_id,
+    amount_kobo) for a structurally valid successful NGN transaction.
+    """
     reference = str(transaction.get("reference", ""))
     if not REFERENCE_RE.fullmatch(reference):
         raise HTTPException(status_code=400, detail="Invalid payment reference.")
     if transaction.get("status") != "success":
-        return {"ok": True, "credited": False, "status": str(transaction.get("status", "unknown"))}
+        return None
     if str(transaction.get("currency", "")).upper() != "NGN":
         raise HTTPException(status_code=400, detail="Payment currency does not match the order.")
-
     tx_id = transaction.get("id")
     if tx_id is None or not str(tx_id).isdigit():
         raise HTTPException(status_code=400, detail="Payment provider transaction ID is invalid.")
+    amount = transaction.get("amount")
+    if isinstance(amount, bool) or not str(amount).isdigit():
+        raise HTTPException(status_code=400, detail="Payment amount is invalid.")
+    return reference, str(tx_id), int(amount)
+
+
+async def _fulfill_verified_transaction(transaction: dict[str, Any]) -> dict[str, Any]:
+    validated = validate_verified_transaction(transaction)
+    if validated is None:
+        return {"ok": True, "credited": False, "status": str(transaction.get("status", "unknown"))}
+    reference, tx_id, amount_kobo = validated
 
     await _require_database()
     async with database._pool.connection() as conn:
@@ -157,11 +172,11 @@ async def _fulfill_verified_transaction(transaction: dict[str, Any]) -> dict[str
             )).fetchone()
             if not order:
                 raise HTTPException(status_code=404, detail="Payment order was not found.")
-            if int(transaction.get("amount", -1)) != int(order["amount_kobo"]):
+            if amount_kobo != int(order["amount_kobo"]):
                 raise HTTPException(status_code=400, detail="Paid amount does not match the order.")
-            if str(transaction.get("currency", "")).upper() != order["currency"]:
+            if "NGN" != order["currency"]:
                 raise HTTPException(status_code=400, detail="Paid currency does not match the order.")
-            if str(tx_id) != str(order["provider_transaction_id"] or tx_id):
+            if order["provider_transaction_id"] is not None and tx_id != str(order["provider_transaction_id"]):
                 raise HTTPException(status_code=409, detail="This transaction ID is already linked to another payment.")
             if order["status"] == "success":
                 return {"ok": True, "credited": True, "duplicate": True, "reference": reference}
