@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from database import (database_configured, start_database, close_database, initialize_schema, get_idempotency as db_get_idempotency, create_idempotency as db_create_idempotency, complete_idempotency as db_complete_idempotency, delete_idempotency as db_delete_idempotency)
-from pricing import quote as pricing_quote, catalog as pricing_catalog
+from pricing import quote as pricing_quote, catalog as pricing_catalog, package_economics
 from wallet import router as wallet_router
 from payments import router as payments_router, initialize_payment_schema
 from wallet_store import initialize_wallet_schema
@@ -210,6 +210,12 @@ def provider_info():
 def pricing_catalog_endpoint():
     """Return the current internal provider rate card and margin assumptions."""
     return {"ok": True, **pricing_catalog()}
+
+
+@app.get("/api/pricing/packages")
+def pricing_package_economics_endpoint():
+    """Return planning economics for the server-owned credit packages."""
+    return {"ok": True, **package_economics()}
 
 
 class PricingQuoteRequest(BaseModel):
