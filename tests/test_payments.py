@@ -5,10 +5,12 @@ import payments
 
 
 def test_packages_are_fixed_server_side_values():
-    assert payments.PACKAGES["starter"]["amount_kobo"] == 50000
-    assert str(payments.PACKAGES["starter"]["credits"]) == "5000"
-    assert payments.PACKAGES["creator"]["amount_kobo"] == 150000
-    assert str(payments.PACKAGES["studio"]["credits"]) == "60000"
+    assert payments.PACKAGES["starter"]["amount_kobo"] == 500000
+    assert str(payments.PACKAGES["starter"]["credits"]) == "400"
+    assert payments.PACKAGES["creator"]["amount_kobo"] == 1500000
+    assert str(payments.PACKAGES["creator"]["credits"]) == "1300"
+    assert payments.PACKAGES["studio"]["amount_kobo"] == 5000000
+    assert str(payments.PACKAGES["studio"]["credits"]) == "4500"
 
 
 def test_payment_reference_format_is_unambiguous():
