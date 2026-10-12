@@ -13,7 +13,7 @@ from typing import Any
 # $0.01 before plan discounts. This is a pricing/accounting convention, not a
 # provider cost.
 NENE_CREDIT_USD = float(os.getenv("NENE_CREDIT_USD", "0.01"))
-TARGET_GROSS_MARGIN = float(os.getenv("NENE_TARGET_GROSS_MARGIN", "0.70"))
+TARGET_GROSS_MARGIN = float(os.getenv("NENE_TARGET_GROSS_MARGIN", "0.50"))
 RISK_BUFFER = float(os.getenv("NENE_PROVIDER_RISK_BUFFER", "0.10"))
 
 # Planning reference only. Refresh against the rate used to settle provider
@@ -25,6 +25,22 @@ PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN = float(
     os.getenv("NENE_PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN", "2500")
 )
 PAYSTACK_LOCAL_FEE_CAP_NGN = float(os.getenv("NENE_PAYSTACK_LOCAL_FEE_CAP_NGN", "2000"))
+
+# Server-owned package prices used for conservative credit economics. Keep these
+# synchronized with payments.PACKAGES; the tests enforce the values.
+CREDIT_PACKAGES = {
+    "starter": {"price_ngn": 5000, "credits": 400},
+    "creator": {"price_ngn": 15000, "credits": 1300},
+    "studio": {"price_ngn": 50000, "credits": 4500},
+}
+# Worst-case package face value (Studio has the lowest price per credit).
+CREDIT_VALUE_NGN = min(
+    package["price_ngn"] / package["credits"]
+    for package in CREDIT_PACKAGES.values()
+)
+# Conservative payment fee allocation: use Starter's fixed fee per credit plus
+# the percentage fee. This is a guardrail; actual reporting uses actual order fee.
+FIXED_FEE_PER_CREDIT_NGN = PAYSTACK_LOCAL_FIXED_NGN / CREDIT_PACKAGES["starter"]["credits"]
 
 # Exact public API rates where the provider publishes them directly.
 RATES = [
@@ -101,8 +117,29 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
         raise KeyError(f"No cost rate for {provider}/{model}/{resolution}")
     raw_cost = rate["usd_per_second"] * duration
     cost_with_buffer = raw_cost * (1 + RISK_BUFFER)
-    revenue_needed = cost_with_buffer / (1 - margin) if duration else 0.0
-    credits = math.ceil(revenue_needed / NENE_CREDIT_USD) if revenue_needed else 0
+    buffered_cost_ngn = cost_with_buffer * USD_TO_NGN
+    # Charge credits against the lowest effective package price, while reserving
+    # room for payment processing and the requested contribution margin.
+    if not math.isfinite(USD_TO_NGN) or USD_TO_NGN <= 0:
+        raise ValueError("NENE_USD_TO_NGN must be a positive finite number")
+    if not math.isfinite(PAYSTACK_LOCAL_PERCENT) or not 0 <= PAYSTACK_LOCAL_PERCENT < 1 - margin:
+        raise ValueError("NENE_PAYSTACK_LOCAL_PERCENT must be finite and below 1 - margin")
+    if not math.isfinite(PAYSTACK_LOCAL_FIXED_NGN) or PAYSTACK_LOCAL_FIXED_NGN < 0:
+        raise ValueError("NENE_PAYSTACK_LOCAL_FIXED_NGN must be finite and non-negative")
+    if not math.isfinite(PAYSTACK_LOCAL_FEE_CAP_NGN) or PAYSTACK_LOCAL_FEE_CAP_NGN < 0:
+        raise ValueError("NENE_PAYSTACK_LOCAL_FEE_CAP_NGN must be finite and non-negative")
+    if not math.isfinite(PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN) or PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN < 0:
+        raise ValueError("NENE_PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN must be finite and non-negative")
+    credit_revenue_ngn = CREDIT_VALUE_NGN
+    allocated_payment_fee_ngn = (
+        credit_revenue_ngn * PAYSTACK_LOCAL_PERCENT + FIXED_FEE_PER_CREDIT_NGN
+    )
+    allowed_cost_per_credit_ngn = (
+        credit_revenue_ngn - allocated_payment_fee_ngn
+    ) * (1 - margin)
+    if allowed_cost_per_credit_ngn <= 0:
+        raise ValueError("Credit package economics cannot support the requested margin")
+    credits = math.ceil(buffered_cost_ngn / allowed_cost_per_credit_ngn)
     revenue = credits * NENE_CREDIT_USD
     profit = revenue - raw_cost
     realized_margin = (profit / revenue) if revenue else 0.0
@@ -115,7 +152,11 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
         "provider_cost_with_risk_buffer_usd": round(cost_with_buffer, 6),
         "target_gross_margin": margin,
         "nene_credit_usd": NENE_CREDIT_USD,
+        "credit_face_value_ngn": round(CREDIT_VALUE_NGN, 4),
+        "conservative_payment_fee_per_credit_ngn": round(allocated_payment_fee_ngn, 4),
+        "provider_cost_with_risk_buffer_ngn": round(buffered_cost_ngn, 2),
         "recommended_credits": credits,
+        "recommended_credit_value_ngn": round(credits * CREDIT_VALUE_NGN, 2),
         "recommended_customer_value_usd": round(revenue, 4),
         "expected_profit_usd": round(profit, 4),
         "realized_margin": round(realized_margin, 4),
@@ -135,5 +176,8 @@ def catalog() -> dict[str, Any]:
         "nene_credit_usd": NENE_CREDIT_USD,
         "target_gross_margin": TARGET_GROSS_MARGIN,
         "risk_buffer": RISK_BUFFER,
+        "fx_reference_ngn_per_usd": USD_TO_NGN,
+        "credit_face_value_ngn": round(CREDIT_VALUE_NGN, 4),
+        "credit_packages": CREDIT_PACKAGES,
         "rates": RATES,
     }
