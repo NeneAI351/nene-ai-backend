@@ -90,3 +90,42 @@ def test_webhook_signature_rejects_wrong_secret_body_or_missing_signature():
     assert not payments.is_valid_webhook_signature(secret, raw_body + b" ", signature)
     assert not payments.is_valid_webhook_signature(secret, raw_body, "")
     assert not payments.is_valid_webhook_signature("", raw_body, signature)
+
+
+def _valid_transaction(**overrides):
+    transaction = {
+        "reference": "nene_" + "a" * 32,
+        "status": "success",
+        "currency": "NGN",
+        "id": 123456789,
+        "amount": 500000,
+    }
+    transaction.update(overrides)
+    return transaction
+
+
+def test_verified_payment_validator_returns_normalized_success_transaction():
+    assert payments.validate_verified_transaction(_valid_transaction()) == (
+        "nene_" + "a" * 32, "123456789", 500000
+    )
+
+
+def test_verified_payment_validator_ignores_non_success_without_crediting():
+    assert payments.validate_verified_transaction(_valid_transaction(status="pending")) is None
+    assert payments.validate_verified_transaction(_valid_transaction(status="failed")) is None
+
+
+@pytest.mark.parametrize("overrides, message", [
+    ({"reference": "invalid"}, "reference"),
+    ({"currency": "USD"}, "currency"),
+    ({"id": "tx-not-numeric"}, "transaction ID"),
+    ({"id": None}, "transaction ID"),
+    ({"amount": -1}, "amount"),
+    ({"amount": "500000.5"}, "amount"),
+    ({"amount": True}, "amount"),
+])
+def test_verified_payment_validator_rejects_malformed_success_transactions(overrides, message):
+    with pytest.raises(HTTPException) as exc:
+        payments.validate_verified_transaction(_valid_transaction(**overrides))
+    assert exc.value.status_code == 400
+    assert message.lower() in str(exc.value.detail).lower()
