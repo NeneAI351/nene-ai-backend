@@ -92,3 +92,20 @@ def test_video_capacity_does_not_promise_a_video_when_credits_are_insufficient()
         and choice["duration_seconds"] == 10
     )
     assert expensive["package_video_capacity"]["starter"] == 0
+
+
+def test_usd_revenue_and_profit_use_same_conservative_ngn_package_economics():
+    quote = pricing.quote("ltx", "ltx-2-5-fast", "1080p", 6)
+    expected_revenue_usd = (
+        quote["estimated_package_revenue_ngn_allocated_to_generation"]
+        / quote["fx_reference_ngn_per_usd"]
+    )
+    expected_profit_usd = (
+        quote["estimated_contribution_after_provider_buffer_and_payment_fee_ngn"]
+        / quote["fx_reference_ngn_per_usd"]
+    )
+    assert quote["recommended_customer_value_usd"] == pytest.approx(expected_revenue_usd, abs=0.0001)
+    assert quote["expected_profit_usd"] == pytest.approx(expected_profit_usd, abs=0.0001)
+    assert quote["realized_margin"] == pytest.approx(
+        quote["estimated_contribution_margin_after_payment_fee"], abs=0.0001
+    )
