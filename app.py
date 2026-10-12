@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from database import (database_configured, start_database, close_database, initialize_schema, get_idempotency as db_get_idempotency, create_idempotency as db_create_idempotency, complete_idempotency as db_complete_idempotency, delete_idempotency as db_delete_idempotency)
-from pricing import quote as pricing_quote, catalog as pricing_catalog, package_economics
+from pricing import quote as pricing_quote, catalog as pricing_catalog, package_economics, video_capacity
 from wallet import router as wallet_router
 from payments import router as payments_router, initialize_payment_schema
 from wallet_store import initialize_wallet_schema
@@ -216,6 +216,12 @@ def pricing_catalog_endpoint():
 def pricing_package_economics_endpoint():
     """Return planning economics for the server-owned credit packages."""
     return {"ok": True, **package_economics()}
+
+
+@app.get("/api/pricing/capacity")
+def pricing_video_capacity_endpoint():
+    """Return calculated credit charges and maximum video counts per package."""
+    return {"ok": True, **video_capacity()}
 
 
 class PricingQuoteRequest(BaseModel):
