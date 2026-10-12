@@ -117,6 +117,7 @@ async def owner_finance_summary(user_id: str = Depends(get_authenticated_user_id
                 "package_id": row["package_id"],
                 "amount_ngn": _money(Decimal(int(row["amount_kobo"])) / Decimal(100)),
                 "currency": row["currency"],
+                "mode": row["mode"],
                 "status": row["status"],
                 "paid_at": row["paid_at"].isoformat() if row["paid_at"] else None,
                 "created_at": row["created_at"].isoformat() if row["created_at"] else None,
