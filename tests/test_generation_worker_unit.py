@@ -106,3 +106,114 @@ async def test_dispatch_event_completes_after_successful_dispatch_not_retried(mo
     assert calls[0] == "dispatch"
     assert calls[1][0] == "complete"
     assert "retry" not in calls
+
+
+@pytest.mark.asyncio
+async def test_cost_persistence_failure_never_marks_generation_succeeded(monkeypatch):
+    generation_id = "00000000-0000-4000-8000-000000000001"
+    owner_id = "00000000-0000-4000-8000-000000000002"
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        def json(self):
+            return {"status": "succeeded", "result": {"video_url": "https://media.example.test/video.mp4"}}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_args):
+            return False
+        async def get(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(generation_worker, "_provider_config", lambda: ("https://api.ltx.io", {}))
+    monkeypatch.setattr(generation_worker.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(
+        generation_worker, "_download_and_store_video",
+        lambda *_args: _async_return({"object_key": f"generations/{generation_id}/video.mp4",
+                                     "content_type": "video/mp4", "size_bytes": 128}),
+    )
+
+    def quote(**_kwargs):
+        return {
+            "provider": "ltx", "model": "ltx-2-5-fast", "resolution": "1080p",
+            "duration_seconds": 6.0, "provider_cost_usd": 0.78,
+            "provider_cost_with_risk_buffer_usd": 0.858, "cost_basis": "test",
+        }
+
+    async def fail_cost(_record):
+        calls.append("cost_persistence")
+        raise RuntimeError("database_temporarily_unavailable")
+
+    async def transition(*_args, **_kwargs):
+        calls.append("transition_succeeded")
+
+    monkeypatch.setattr(generation_worker, "pricing_quote", quote)
+    monkeypatch.setattr(generation_worker.provider_costs, "record_generation_cost_estimate", fail_cost)
+    monkeypatch.setattr(generation_worker.generation_store, "transition_generation", transition)
+
+    generation = {
+        "id": generation_id, "user_id": owner_id, "provider": "ltx",
+        "provider_job_id": "job-test", "generation_type": "text-to-video",
+        "status": "running",
+        "request": {"model": "ltx-2-5-fast", "resolution": "1080p", "duration": 6},
+    }
+    with pytest.raises(RuntimeError, match="database_temporarily_unavailable"):
+        await generation_worker._reconcile(generation)
+
+    assert calls == ["cost_persistence"]
+
+
+async def _async_return(value):
+    return value
+
+
+@pytest.mark.asyncio
+async def test_cost_persistence_failure_schedules_outbox_retry(monkeypatch):
+    calls = []
+    generation_id = "00000000-0000-4000-8000-000000000001"
+
+    async def load(_generation_id):
+        return {
+            "id": generation_id,
+            "user_id": "00000000-0000-4000-8000-000000000002",
+            "provider": "ltx",
+            "status": "running",
+            "provider_job_id": "job-test",
+        }
+
+    async def reconcile(_generation):
+        raise RuntimeError("database_temporarily_unavailable")
+
+    async def retry(event_id, worker_id, error_code, **kwargs):
+        calls.append(("retry", event_id, worker_id, error_code, kwargs))
+
+    async def complete(*args):
+        calls.append(("complete", *args))
+
+    monkeypatch.setattr(generation_worker, "_load_generation", load)
+    monkeypatch.setattr(generation_worker, "_reconcile", reconcile)
+    monkeypatch.setattr(generation_worker.generation_outbox, "retry_event", retry)
+    monkeypatch.setattr(generation_worker.generation_outbox, "complete_event", complete)
+
+    await generation_worker.process_event(
+        {
+            "id": "00000000-0000-4000-8000-000000000003",
+            "generation_id": generation_id,
+            "event_type": "reconcile_generation",
+            "lease_token": "00000000-0000-4000-8000-000000000004",
+            "attempts": 1,
+        },
+        "test-worker",
+    )
+
+    assert len(calls) == 1
+    action, event_id, worker_id, error_code, kwargs = calls[0]
+    assert action == "retry"
+    assert event_id == "00000000-0000-4000-8000-000000000003"
+    assert worker_id == "test-worker"
+    assert error_code == "database_temporarily_unavailable"
+    assert kwargs["delay_seconds"] == 2
+    assert kwargs["max_attempts"] == 12
+    assert kwargs["lease_token"] == "00000000-0000-4000-8000-000000000004"

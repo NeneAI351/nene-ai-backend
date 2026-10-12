@@ -23,6 +23,8 @@ import database
 import generation_outbox
 import generation_store
 import media_storage
+import provider_costs
+from pricing import quote as pricing_quote
 from wallet_store import wallet_capture, wallet_release
 
 logger = logging.getLogger("nene-ai.worker")
@@ -292,6 +294,26 @@ async def _reconcile(generation: dict[str, Any]) -> int:
         # redirects, validate the MP4 signature/size, and store in a private bucket
         # before marking the generation successful or capturing credits.
         stored = await _download_and_store_video(video_url, generation_id)
+        # Record a traceable estimate before marking the job successful. The
+        # rate-card value is not an invoice amount; the metadata says so.
+        request = generation.get("request") or {}
+        if isinstance(request, str):
+            request = json.loads(request)
+        cost_quote = pricing_quote(
+            provider="ltx",
+            model=str(request.get("model") or ""),
+            resolution=str(request.get("resolution") or ""),
+            duration=float(request.get("duration") or 0),
+        )
+        cost_record = provider_costs.estimate_generation_cost(
+            generation_id=generation_id,
+            provider="ltx",
+            model=str(request.get("model") or ""),
+            resolution=str(request.get("resolution") or ""),
+            duration_seconds=request.get("duration"),
+            rate_quote=cost_quote,
+        )
+        await provider_costs.record_generation_cost_estimate(cost_record)
         await generation_store.transition_generation(
             owner, generation_id, "succeeded",
             result={
