@@ -47,6 +47,8 @@ def _ensure_unique_scene_indexes(scenes: list[dict[str,Any]]) -> None:
     indexes=[scene["scene_index"] for scene in scenes]
     if len(indexes)!=len(set(indexes)):
         raise ValueError("Scene indexes must be unique.")
+    if sorted(indexes)!=list(range(len(indexes))):
+        raise ValueError("Scene indexes must be contiguous and start at zero.")
 
 @router.get("")
 async def list_stories(limit: int=Query(default=30,ge=1,le=100), user_id: str=Depends(get_authenticated_user_id)):
