@@ -159,10 +159,12 @@ async def queue_assembly(user_id: str, story_id: str, idempotency_key: str) -> d
                 return None
             if story.get("status")=="completed" and story.get("final_object_key"):
                 return {"story_id":story_id,"status":"succeeded","output_object_key":story["final_object_key"]}
-            existing=await (await conn.execute("""SELECT id::text,status,output_object_key,error_code
+            existing=await (await conn.execute("""SELECT id::text,story_id::text,status,output_object_key,error_code
               FROM story_assembly_jobs WHERE user_id=%s AND idempotency_key=%s""",(user_id,key))).fetchone()
             if existing:
-                return {"story_id":story_id,**existing}
+                if existing["story_id"] != story_id:
+                    raise ValueError("Idempotency key was already used for another story.")
+                return existing
             scenes=await (await conn.execute("""SELECT s.scene_index,g.status AS generation_status,
               COALESCE(s.result_object_key,g.result->>'object_key') AS object_key
               FROM story_scenes s LEFT JOIN generations g ON g.id=s.generation_id AND g.user_id=s.user_id
@@ -181,7 +183,7 @@ async def queue_assembly(user_id: str, story_id: str, idempotency_key: str) -> d
               RETURNING id::text,status,output_object_key,error_code""",
               (job_id,story_id,user_id,key))).fetchone()
             if not row:
-                row=await (await conn.execute("""SELECT id::text,status,output_object_key,error_code
+                row=await (await conn.execute("""SELECT id::text,story_id::text,status,output_object_key,error_code
                   FROM story_assembly_jobs WHERE user_id=%s AND idempotency_key=%s""",(user_id,key))).fetchone()
             await conn.execute("UPDATE story_projects SET status='assembling',error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s",(story_id,user_id))
             return {"story_id":story_id,**row}
