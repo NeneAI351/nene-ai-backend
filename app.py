@@ -29,6 +29,7 @@ from auth import get_authenticated_user_id
 from readiness import router as readiness_router
 from projects import router as projects_router
 from characters import router as characters_router
+from provider_routes import router as provider_router
 import database
 import generation_store
 import generation_service
@@ -92,6 +93,7 @@ app.include_router(wallet_router)
 app.include_router(readiness_router)
 app.include_router(projects_router)
 app.include_router(characters_router)
+app.include_router(provider_router)
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
 PIXAZO_API_KEY = os.getenv("PIXAZO_API_KEY", "").strip()
