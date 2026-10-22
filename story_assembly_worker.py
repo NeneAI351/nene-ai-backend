@@ -84,14 +84,36 @@ async def _claim_job(worker_id: str) -> dict[str,Any]|None:
     async with database._pool.connection() as conn:
         async with conn.transaction():
             row=await (await conn.execute("""SELECT id::text,story_id::text,user_id::text
-              FROM story_assembly_jobs WHERE status='queued'
+              FROM story_assembly_jobs
+              WHERE status='queued' OR (status='running' AND lease_expires_at < NOW())
               ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED""")).fetchone()
             if not row:return None
-            await conn.execute("UPDATE story_assembly_jobs SET status='running',updated_at=NOW() WHERE id=%s",(row["id"],))
+            await conn.execute("""UPDATE story_assembly_jobs SET status='running',lease_owner=%s,
+              lease_expires_at=NOW()+INTERVAL '10 minutes',attempts=attempts+1,updated_at=NOW()
+              WHERE id=%s""",(worker_id,row["id"]))
+            row["lease_owner"]=worker_id
             return row
+
+async def _heartbeat(job_id: str, user_id: str, worker_id: str, stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        try:
+            async with database._pool.connection() as conn:
+                await conn.execute("""UPDATE story_assembly_jobs SET lease_expires_at=NOW()+INTERVAL '10 minutes',
+                  updated_at=NOW() WHERE id=%s AND user_id=%s AND status='running' AND lease_owner=%s""",
+                  (job_id,user_id,worker_id))
+                await conn.commit()
+        except Exception:
+            logger.exception("Assembly lease heartbeat failed for job %s",job_id)
+        try:
+            await asyncio.wait_for(stop.wait(),timeout=30)
+        except asyncio.TimeoutError:
+            pass
 
 async def _process(job: dict[str,Any]) -> None:
     job_id,story_id,user_id=job["id"],job["story_id"],job["user_id"]
+    worker_id=job.get("lease_owner","")
+    stop_heartbeat=asyncio.Event()
+    heartbeat=asyncio.create_task(_heartbeat(job_id,user_id,worker_id,stop_heartbeat))
     try:
         # Lock the story and verify every scene has a durable private MP4 result.
         rows=await database.fetch_all("""SELECT s.scene_index,COALESCE(s.result_object_key,g.result->>'object_key') AS object_key,
@@ -111,17 +133,26 @@ async def _process(job: dict[str,Any]) -> None:
                   error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s""",
                   (stored["object_key"],story_id,user_id))
                 await conn.execute("""UPDATE story_assembly_jobs SET status='succeeded',output_object_key=%s,
-                  error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s""",
-                  (stored["object_key"],job_id,user_id))
+                  error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=NOW()
+                  WHERE id=%s AND user_id=%s AND lease_owner=%s""",
+                  (stored["object_key"],job_id,user_id,worker_id))
     except Exception as exc:
         code=str(exc)[:120] if isinstance(exc,ValueError) else "story_assembly_failed"
         logger.exception("Story assembly job %s failed",job_id)
         async with database._pool.connection() as conn:
             async with conn.transaction():
-                await conn.execute("""UPDATE story_assembly_jobs SET status='failed',error_code=%s,updated_at=NOW()
-                  WHERE id=%s AND user_id=%s AND status='running'""",(code,job_id,user_id))
+                await conn.execute("""UPDATE story_assembly_jobs SET status='failed',error_code=%s,
+                  lease_owner=NULL,lease_expires_at=NULL,updated_at=NOW()
+                  WHERE id=%s AND user_id=%s AND status='running' AND lease_owner=%s""",(code,job_id,user_id,worker_id))
                 await conn.execute("""UPDATE story_projects SET status='failed',error_code=%s,updated_at=NOW()
                   WHERE id=%s AND user_id=%s AND status<>'completed'""",(code,story_id,user_id))
+    finally:
+        stop_heartbeat.set()
+        heartbeat.cancel()
+        try:
+            await heartbeat
+        except asyncio.CancelledError:
+            pass
 
 async def run_worker() -> None:
     if not database.database_configured(): raise RuntimeError("DATABASE_URL is required")
