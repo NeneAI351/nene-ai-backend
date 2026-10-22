@@ -62,7 +62,7 @@ def _assemble_and_upload(scene_keys: list[str], assembly_id: str) -> dict[str,An
             target=root/f"normalized-{index:03d}.mp4"
             cmd=["ffmpeg","-nostdin","-hide_banner","-loglevel","error","-y",
                  "-i",str(source),"-map","0:v:0","-an","-vf",
-                 "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=24,format=yuv420p",
+                 "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p",
                  "-c:v","libx264","-preset","veryfast","-movflags","+faststart",
                  "-t", "120",str(target)]
             subprocess.run(cmd,check=True,timeout=MAX_ASSEMBLY_SECONDS,capture_output=True)
