@@ -191,6 +191,9 @@ CREATE TABLE IF NOT EXISTS story_assembly_jobs (
   idempotency_key TEXT NOT NULL,
   output_object_key TEXT,
   error_code TEXT,
+  lease_owner TEXT,
+  lease_expires_at TIMESTAMPTZ,
+  attempts INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(user_id, idempotency_key)
