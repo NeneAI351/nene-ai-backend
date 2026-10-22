@@ -4,6 +4,8 @@ import json, uuid
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import Header
+import media_storage
 import database
 from auth import get_authenticated_user_id
 import story_store
@@ -95,3 +97,48 @@ async def remove_story(story_id: uuid.UUID,user_id: str=Depends(get_authenticate
     except RuntimeError: raise _unavailable()
     if not deleted: raise HTTPException(status_code=404,detail="Story not found.")
     return None
+
+@router.post("/{story_id}/assemble",status_code=202)
+async def request_story_assembly(
+    story_id: uuid.UUID,
+    idempotency_key: str=Header(alias="Idempotency-Key",min_length=1,max_length=160),
+    user_id: str=Depends(get_authenticated_user_id),
+):
+    if not database.database_configured(): raise _unavailable()
+    try:
+        job=await story_store.queue_assembly(user_id,str(story_id),idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=409,detail=str(exc))
+    except RuntimeError:
+        raise _unavailable()
+    if job is None: raise HTTPException(status_code=404,detail="Story not found.")
+    if job.get("story_id") and job.get("story_id")!=str(story_id):
+        raise HTTPException(status_code=409,detail="Idempotency key was already used for another story.")
+    return {"story_id":str(story_id),"assembly_job_id":job.get("id"),"status":job.get("status"),"error_code":job.get("error_code")}
+
+@router.get("/{story_id}/assembly")
+async def story_assembly_status(story_id: uuid.UUID,user_id: str=Depends(get_authenticated_user_id)):
+    if not database.database_configured(): raise _unavailable()
+    try:
+        story=await story_store.get_story(user_id,str(story_id))
+        if story is None: raise HTTPException(status_code=404,detail="Story not found.")
+        job=await story_store.get_assembly_job(user_id,str(story_id))
+    except RuntimeError: raise _unavailable()
+    return {"story_id":str(story_id),"story_status":story["status"],"assembly":job}
+
+@router.get("/{story_id}/video")
+async def story_video_playback(story_id: uuid.UUID,user_id: str=Depends(get_authenticated_user_id)):
+    if not database.database_configured(): raise _unavailable()
+    try:
+        story=await database.fetch_one("""SELECT final_object_key FROM story_projects
+          WHERE id=%s AND user_id=%s AND status='completed'""",(str(story_id),user_id))
+    except RuntimeError: raise _unavailable()
+    if not story: raise HTTPException(status_code=404,detail="Completed story video not found.")
+    if not story.get("final_object_key"): raise HTTPException(status_code=404,detail="Final video is not ready.")
+    try:
+        url=await __import__("asyncio").to_thread(media_storage.create_signed_download_url,story["final_object_key"])
+    except media_storage.MediaStorageNotConfigured:
+        raise HTTPException(status_code=503,detail="Private video storage is unavailable.")
+    except (ValueError,RuntimeError):
+        raise HTTPException(status_code=503,detail="Private video playback URL could not be created.")
+    return {"video_url":url,"expires_in":media_storage.SIGNED_URL_TTL_SECONDS,"content_type":"video/mp4"}
