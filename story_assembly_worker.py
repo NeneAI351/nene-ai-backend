@@ -129,23 +129,26 @@ async def _process(job: dict[str,Any]) -> None:
         async with database._pool.connection() as conn:
             async with conn.transaction():
                 # Owner-scoped finalization and job completion commit together.
-                await conn.execute("""UPDATE story_projects SET status='completed',final_object_key=%s,
-                  error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s""",
-                  (stored["object_key"],story_id,user_id))
-                await conn.execute("""UPDATE story_assembly_jobs SET status='succeeded',output_object_key=%s,
-                  error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=NOW()
-                  WHERE id=%s AND user_id=%s AND lease_owner=%s""",
-                  (stored["object_key"],job_id,user_id,worker_id))
+                finalized=await (await conn.execute("""UPDATE story_assembly_jobs SET status='succeeded',
+                  output_object_key=%s,error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=NOW()
+                  WHERE id=%s AND user_id=%s AND status='running' AND lease_owner=%s RETURNING id""",
+                  (stored["object_key"],job_id,user_id,worker_id))).fetchone()
+                if finalized:
+                    await conn.execute("""UPDATE story_projects SET status='completed',final_object_key=%s,
+                      error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s""",
+                      (stored["object_key"],story_id,user_id))
     except Exception as exc:
         code=str(exc)[:120] if isinstance(exc,ValueError) else "story_assembly_failed"
         logger.exception("Story assembly job %s failed",job_id)
         async with database._pool.connection() as conn:
             async with conn.transaction():
-                await conn.execute("""UPDATE story_assembly_jobs SET status='failed',error_code=%s,
+                finalized=await (await conn.execute("""UPDATE story_assembly_jobs SET status='failed',error_code=%s,
                   lease_owner=NULL,lease_expires_at=NULL,updated_at=NOW()
-                  WHERE id=%s AND user_id=%s AND status='running' AND lease_owner=%s""",(code,job_id,user_id,worker_id))
-                await conn.execute("""UPDATE story_projects SET status='failed',error_code=%s,updated_at=NOW()
-                  WHERE id=%s AND user_id=%s AND status<>'completed'""",(code,story_id,user_id))
+                  WHERE id=%s AND user_id=%s AND status='running' AND lease_owner=%s RETURNING id""",
+                  (code,job_id,user_id,worker_id))).fetchone()
+                if finalized:
+                    await conn.execute("""UPDATE story_projects SET status='failed',error_code=%s,updated_at=NOW()
+                      WHERE id=%s AND user_id=%s AND status<>'completed'""",(code,story_id,user_id))
     finally:
         stop_heartbeat.set()
         heartbeat.cancel()
