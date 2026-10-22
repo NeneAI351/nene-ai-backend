@@ -37,3 +37,10 @@ def test_duplicate_scene_indexes_are_rejected():
 def test_scene_count_contract_caps_at_fifty():
     with pytest.raises(ValidationError):
         ScenesSave(scenes=[{"scene_index":i,"prompt":"Scene","duration_seconds":6} for i in range(51)])
+
+def test_scene_indexes_must_be_contiguous_from_zero():
+    with pytest.raises(ValueError,match="contiguous"):
+        _ensure_unique_scene_indexes([
+            {"scene_index":0,"prompt":"Opening","duration_seconds":6},
+            {"scene_index":2,"prompt":"Ending","duration_seconds":6},
+        ])
