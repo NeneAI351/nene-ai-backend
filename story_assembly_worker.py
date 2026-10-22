@@ -85,7 +85,7 @@ async def _claim_job(worker_id: str) -> dict[str,Any]|None:
         async with conn.transaction():
             row=await (await conn.execute("""SELECT id::text,story_id::text,user_id::text
               FROM story_assembly_jobs WHERE status='queued'
-              ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1""")).fetchone()
+              ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED""")).fetchone()
             if not row:return None
             await conn.execute("UPDATE story_assembly_jobs SET status='running',updated_at=NOW() WHERE id=%s",(row["id"],))
             return row
