@@ -132,6 +132,8 @@ async def save_scenes(user_id: str, story_id: str, scenes: list[dict[str,Any]]) 
                         THEN story_scenes.result_object_key ELSE NULL END,
                       error_code=NULL,updated_at=NOW()""",
                     (scene_id,story_id,user_id,scene["scene_index"],scene["prompt"],scene["duration_seconds"]))
+            await conn.execute("DELETE FROM story_scenes WHERE story_id=%s AND user_id=%s AND scene_index >= %s",
+                               (story_id,user_id,len(scenes)))
             await conn.execute("UPDATE story_projects SET updated_at=NOW() WHERE id=%s AND user_id=%s",(story_id,user_id))
     return await get_story(user_id,story_id)
 
