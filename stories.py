@@ -43,6 +43,11 @@ class GenerationLink(BaseModel):
 def _unavailable():
     return HTTPException(status_code=503,detail="Durable Story storage is unavailable.")
 
+def _ensure_unique_scene_indexes(scenes: list[dict[str,Any]]) -> None:
+    indexes=[scene["scene_index"] for scene in scenes]
+    if len(indexes)!=len(set(indexes)):
+        raise ValueError("Scene indexes must be unique.")
+
 @router.get("")
 async def list_stories(limit: int=Query(default=30,ge=1,le=100), user_id: str=Depends(get_authenticated_user_id)):
     if not database.database_configured(): raise _unavailable()
@@ -75,8 +80,8 @@ async def read_story(story_id: uuid.UUID,user_id: str=Depends(get_authenticated_
 async def save_scenes(story_id: uuid.UUID,body: ScenesSave,user_id: str=Depends(get_authenticated_user_id)):
     if not database.database_configured(): raise _unavailable()
     scenes=[s.model_dump() for s in body.scenes]
-    indexes=[s["scene_index"] for s in scenes]
-    if len(indexes)!=len(set(indexes)): raise HTTPException(status_code=422,detail="Scene indexes must be unique.")
+    try: _ensure_unique_scene_indexes(scenes)
+    except ValueError as exc: raise HTTPException(status_code=422,detail=str(exc))
     if any(s["duration_seconds"] not in {6,8,10} for s in scenes):
         raise HTTPException(status_code=422,detail="Scene duration must be 6, 8, or 10 seconds.")
     scenes.sort(key=lambda s:s["scene_index"])
