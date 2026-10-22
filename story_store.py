@@ -62,6 +62,10 @@ async def initialize_story_schema() -> None:
               updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               UNIQUE(user_id, idempotency_key)
             )""")
+            await conn.execute("ALTER TABLE story_assembly_jobs ADD COLUMN IF NOT EXISTS lease_owner TEXT")
+            await conn.execute("ALTER TABLE story_assembly_jobs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ")
+            await conn.execute("ALTER TABLE story_assembly_jobs ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_assembly_claim ON story_assembly_jobs(status, lease_expires_at, created_at)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_assembly_owner_story ON story_assembly_jobs(user_id, story_id, created_at DESC)")
 
 async def create_story(user_id: str, title: str, prompt: str, project_id: str|None, character_lock: dict[str,Any]) -> dict[str,Any]:
@@ -164,6 +168,13 @@ async def queue_assembly(user_id: str, story_id: str, idempotency_key: str) -> d
             if existing:
                 if existing["story_id"] != story_id:
                     raise ValueError("Idempotency key was already used for another story.")
+                if existing["status"] == "failed":
+                    await conn.execute("""UPDATE story_assembly_jobs SET status='queued',
+                      error_code=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=NOW()
+                      WHERE id=%s AND user_id=%s""",(existing["id"],user_id))
+                    await conn.execute("UPDATE story_projects SET status='assembling',error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s",(story_id,user_id))
+                    existing["status"]="queued"
+                    existing["error_code"]=None
                 return existing
             scenes=await (await conn.execute("""SELECT s.scene_index,g.status AS generation_status,
               COALESCE(s.result_object_key,g.result->>'object_key') AS object_key
