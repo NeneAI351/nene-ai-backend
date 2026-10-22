@@ -1,0 +1,142 @@
+"""Durable Story assembly worker.
+
+Run as a separate process with the same DATABASE_URL and private media-storage
+configuration as the API. Scene clips must already be completed durable generation
+outputs. Assembly itself does not submit provider jobs or charge credits.
+"""
+from __future__ import annotations
+import asyncio, json, logging, os, subprocess, tempfile, uuid
+from pathlib import Path
+from typing import Any
+import database
+import media_storage
+import story_store
+
+logger=logging.getLogger("nene-ai.story-assembly")
+logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"))
+MAX_SCENES=50
+MAX_TOTAL_BYTES=2*1024*1024*1024
+MAX_ASSEMBLY_SECONDS=1800
+
+def _download_private_object(object_key: str, destination: str) -> int:
+    if not isinstance(object_key,str) or not object_key.startswith("generations/") or not object_key.endswith("/video.mp4"):
+        raise ValueError("invalid_scene_object_key")
+    pieces=object_key.split("/")
+    if len(pieces)!=3 or str(uuid.UUID(pieces[1]))!=pieces[1]:
+        raise ValueError("invalid_scene_object_key")
+    cfg=media_storage._storage_config()
+    client=media_storage._client()
+    response=client.get_object(Bucket=cfg["bucket"],Key=object_key)
+    body=response["Body"]
+    total=0
+    try:
+        with open(destination,"wb") as out:
+            while True:
+                chunk=body.read(1024*1024)
+                if not chunk: break
+                total+=len(chunk)
+                if total>media_storage.MAX_VIDEO_BYTES:
+                    raise ValueError("scene_video_too_large")
+                out.write(chunk)
+    finally:
+        body.close()
+    if total<12: raise ValueError("scene_video_empty")
+    with open(destination,"rb") as f:
+        if f.read(64)[4:8]!=b"ftyp": raise ValueError("scene_video_invalid_mp4")
+    return total
+
+def _assemble_and_upload(scene_keys: list[str], assembly_id: str) -> dict[str,Any]:
+    if not scene_keys or len(scene_keys)>MAX_SCENES: raise ValueError("invalid_scene_count")
+    with tempfile.TemporaryDirectory(prefix="nene-story-assembly-") as temp:
+        root=Path(temp)
+        local=[]; total=0
+        for index,key in enumerate(scene_keys):
+            target=root/f"scene-{index:03d}.mp4"
+            total+=_download_private_object(key,str(target))
+            if total>MAX_TOTAL_BYTES: raise ValueError("story_sources_too_large")
+            local.append(target)
+        # Normalize clips to a common H.264/AAC-free MP4 format, then concat
+        # sequentially. No remote URLs are passed to FFmpeg.
+        normalized=[]
+        for index,source in enumerate(local):
+            target=root/f"normalized-{index:03d}.mp4"
+            cmd=["ffmpeg","-nostdin","-hide_banner","-loglevel","error","-y",
+                 "-i",str(source),"-map","0:v:0","-an","-vf",
+                 "scale=trunc(iw/2)*2:trunc(ih/2)*2,fps=24,format=yuv420p",
+                 "-c:v","libx264","-preset","veryfast","-movflags","+faststart",
+                 "-t", "120",str(target)]
+            subprocess.run(cmd,check=True,timeout=MAX_ASSEMBLY_SECONDS,capture_output=True)
+            if not target.exists() or target.stat().st_size<12: raise RuntimeError("scene_normalization_failed")
+            normalized.append(target)
+        concat_file=root/"concat.txt"
+        # All paths are generated local paths without apostrophes.
+        concat_file.write_text("".join(f"file '{p.as_posix()}'\n" for p in normalized),encoding="utf-8")
+        output=root/"final.mp4"
+        subprocess.run(["ffmpeg","-nostdin","-hide_banner","-loglevel","error","-y",
+          "-f","concat","-safe","0","-i",str(concat_file),"-c","copy","-movflags","+faststart",str(output)],
+          check=True,timeout=MAX_ASSEMBLY_SECONDS,capture_output=True)
+        if not output.exists(): raise RuntimeError("story_assembly_output_missing")
+        stored=media_storage.upload_video_file(str(output),assembly_id)
+        return stored
+
+async def _claim_job(worker_id: str) -> dict[str,Any]|None:
+    if database._pool is None: return None
+    async with database._pool.connection() as conn:
+        async with conn.transaction():
+            row=await (await conn.execute("""SELECT id::text,story_id::text,user_id::text
+              FROM story_assembly_jobs WHERE status='queued'
+              ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1""")).fetchone()
+            if not row:return None
+            await conn.execute("UPDATE story_assembly_jobs SET status='running',updated_at=NOW() WHERE id=%s",(row["id"],))
+            return row
+
+async def _process(job: dict[str,Any]) -> None:
+    job_id,story_id,user_id=job["id"],job["story_id"],job["user_id"]
+    try:
+        # Lock the story and verify every scene has a durable private MP4 result.
+        rows=await database.fetch_all("""SELECT s.scene_index,COALESCE(s.result_object_key,g.result->>'object_key') AS object_key,
+          g.status AS generation_status
+          FROM story_scenes s LEFT JOIN generations g ON g.id=s.generation_id AND g.user_id=s.user_id
+          WHERE s.story_id=%s AND s.user_id=%s ORDER BY s.scene_index""",(story_id,user_id))
+        if not rows or len(rows)>MAX_SCENES: raise ValueError("story_scene_count_invalid")
+        if any(not r.get("object_key") or r.get("generation_status")!="succeeded" for r in rows):
+            raise ValueError("story_scenes_not_all_succeeded")
+        if [r["scene_index"] for r in rows]!=list(range(len(rows))):
+            raise ValueError("story_scene_order_incomplete")
+        stored=await asyncio.to_thread(_assemble_and_upload,[r["object_key"] for r in rows],job_id)
+        async with database._pool.connection() as conn:
+            async with conn.transaction():
+                # Owner-scoped finalization and job completion commit together.
+                await conn.execute("""UPDATE story_projects SET status='completed',final_object_key=%s,
+                  error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s""",
+                  (stored["object_key"],story_id,user_id))
+                await conn.execute("""UPDATE story_assembly_jobs SET status='succeeded',output_object_key=%s,
+                  error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s""",
+                  (stored["object_key"],job_id,user_id))
+    except Exception as exc:
+        code=str(exc)[:120] if isinstance(exc,ValueError) else "story_assembly_failed"
+        logger.exception("Story assembly job %s failed",job_id)
+        async with database._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("""UPDATE story_assembly_jobs SET status='failed',error_code=%s,updated_at=NOW()
+                  WHERE id=%s AND user_id=%s AND status='running'""",(code,job_id,user_id))
+                await conn.execute("""UPDATE story_projects SET status='failed',error_code=%s,updated_at=NOW()
+                  WHERE id=%s AND user_id=%s AND status<>'completed'""",(code,story_id,user_id))
+
+async def run_worker() -> None:
+    if not database.database_configured(): raise RuntimeError("DATABASE_URL is required")
+    await database.start_database()
+    await story_store.initialize_story_schema()
+    worker_id=f"story-assembly-{uuid.uuid4()}"
+    try:
+        while True:
+            job=await _claim_job(worker_id)
+            if job is None:
+                await asyncio.sleep(2)
+                continue
+            await _process(job)
+    finally:
+        await database.close_database()
+
+if __name__=="__main__":
+    asyncio.run(run_worker())
