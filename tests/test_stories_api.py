@@ -7,10 +7,9 @@ def test_story_rejects_unknown_owner_fields():
     with pytest.raises(ValidationError):
         StoryCreate(title="Story",prompt="A short film",user_id="someone-else")
 
-def test_scene_duration_is_rejected_by_route_contract_validation():
-    # Duration domain validation is deliberately 6/8/10; API performs this before DB writes.
-    scene=SceneInput(scene_index=0,prompt="Opening scene",duration_seconds=7)
-    assert scene.duration_seconds == 7
+def test_scene_duration_is_validated():
+    with pytest.raises(ValidationError):
+        SceneInput(scene_index=0,prompt="Opening scene",duration_seconds=7)
 
 def test_scene_index_bounds_are_enforced():
     with pytest.raises(ValidationError):
