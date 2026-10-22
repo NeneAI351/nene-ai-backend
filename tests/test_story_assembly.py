@@ -1,7 +1,7 @@
 """Unit tests for durable Story assembly guards (no live storage or provider calls)."""
 import pytest
 import story_assembly_worker
-from stories import StoryCreate, SceneInput, ScenesSave
+from stories import StoryCreate, SceneInput, ScenesSave, _ensure_unique_scene_indexes
 from pydantic import ValidationError
 
 @pytest.mark.parametrize("key",[
@@ -27,13 +27,12 @@ def test_unsupported_scene_durations_are_rejected(duration):
     with pytest.raises(ValidationError):
         SceneInput(scene_index=0,prompt="Opening",duration_seconds=duration)
 
-def test_duplicate_scene_indexes_rejected_by_request_handler_validation():
-    request=ScenesSave(scenes=[
-        {"scene_index":0,"prompt":"Scene one","duration_seconds":6},
-        {"scene_index":0,"prompt":"Duplicate","duration_seconds":6},
-    ])
-    assert request.scenes[0].scene_index==request.scenes[1].scene_index
-    # Route checks uniqueness before writing to the database.
+def test_duplicate_scene_indexes_are_rejected():
+    with pytest.raises(ValueError,match="unique"):
+        _ensure_unique_scene_indexes([
+            {"scene_index":0,"prompt":"Scene one","duration_seconds":6},
+            {"scene_index":0,"prompt":"Duplicate","duration_seconds":6},
+        ])
 
 def test_scene_count_contract_caps_at_fifty():
     with pytest.raises(ValidationError):
