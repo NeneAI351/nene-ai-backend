@@ -36,6 +36,10 @@ class ScenesSave(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scenes: list[SceneInput] = Field(min_length=1,max_length=50)
 
+class GenerationLink(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    generation_id: uuid.UUID
+
 def _unavailable():
     return HTTPException(status_code=503,detail="Durable Story storage is unavailable.")
 
@@ -82,13 +86,13 @@ async def save_scenes(story_id: uuid.UUID,body: ScenesSave,user_id: str=Depends(
     return story
 
 @router.post("/{story_id}/scenes/{scene_index}/generation",status_code=202)
-async def attach_scene_generation(story_id: uuid.UUID,scene_index: int,generation_id: uuid.UUID,user_id: str=Depends(get_authenticated_user_id)):
+async def attach_scene_generation(story_id: uuid.UUID,scene_index: int,body: GenerationLink,user_id: str=Depends(get_authenticated_user_id)):
     if not database.database_configured(): raise _unavailable()
     if scene_index<0 or scene_index>=50: raise HTTPException(status_code=422,detail="Invalid scene index.")
-    try: linked=await story_store.link_scene_generation(user_id,str(story_id),scene_index,str(generation_id))
+    try: linked=await story_store.link_scene_generation(user_id,str(story_id),scene_index,str(body.generation_id))
     except RuntimeError: raise _unavailable()
     if not linked: raise HTTPException(status_code=404,detail="Story scene or owned generation not found.")
-    return {"ok":True,"story_id":str(story_id),"scene_index":scene_index,"generation_id":str(generation_id),"status":"queued"}
+    return {"ok":True,"story_id":str(story_id),"scene_index":scene_index,"generation_id":str(body.generation_id),"status":"queued"}
 
 @router.delete("/{story_id}",status_code=204)
 async def remove_story(story_id: uuid.UUID,user_id: str=Depends(get_authenticated_user_id)):
