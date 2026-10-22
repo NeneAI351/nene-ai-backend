@@ -893,6 +893,13 @@ async def create_generation_endpoint(
         raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
     if req.type not in {"text-to-video", "image-to-video"}:
         raise HTTPException(status_code=400, detail="Unsupported generation type.")
+    # Fail closed before wallet reservation when the only durable worker adapter
+    # is not configured. A queued job without a provider credential can strand
+    # reserved credits and must never be accepted.
+    if (req.provider or "").strip().lower() != "ltx":
+        raise HTTPException(status_code=400, detail="The durable generation worker currently supports LTX only.")
+    if not os.getenv("LTX_API_KEY", "").strip():
+        raise HTTPException(status_code=503, detail="LTX durable generation is not configured; no credits were reserved.")
     if req.type == "image-to-video":
         if _is_production_environment():
             if not req.source_image_id or req.image_url:
