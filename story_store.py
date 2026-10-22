@@ -146,3 +146,47 @@ async def link_scene_generation(user_id: str, story_id: str, scene_index: int, g
 async def delete_story(user_id: str, story_id: str) -> bool:
     row = await database.fetch_one("DELETE FROM story_projects WHERE id=%s AND user_id=%s RETURNING id",(story_id,user_id))
     return row is not None
+
+async def queue_assembly(user_id: str, story_id: str, idempotency_key: str) -> dict[str,Any]|None:
+    key=idempotency_key.strip()
+    if not key or len(key)>160:
+        raise ValueError("Invalid idempotency key.")
+    async with database._pool.connection() as conn:
+        async with conn.transaction():
+            story=await (await conn.execute("""SELECT id::text,status,final_object_key
+              FROM story_projects WHERE id=%s AND user_id=%s FOR UPDATE""",(story_id,user_id))).fetchone()
+            if not story:
+                return None
+            if story.get("status")=="completed" and story.get("final_object_key"):
+                return {"story_id":story_id,"status":"succeeded","output_object_key":story["final_object_key"]}
+            existing=await (await conn.execute("""SELECT id::text,status,output_object_key,error_code
+              FROM story_assembly_jobs WHERE user_id=%s AND idempotency_key=%s""",(user_id,key))).fetchone()
+            if existing:
+                return {"story_id":story_id,**existing}
+            scenes=await (await conn.execute("""SELECT s.scene_index,g.status AS generation_status,
+              COALESCE(s.result_object_key,g.result->>'object_key') AS object_key
+              FROM story_scenes s LEFT JOIN generations g ON g.id=s.generation_id AND g.user_id=s.user_id
+              WHERE s.story_id=%s AND s.user_id=%s ORDER BY s.scene_index FOR UPDATE OF s""",(story_id,user_id))).fetchall()
+            if not scenes or len(scenes)>MAX_SCENES:
+                raise ValueError("Story has no valid scene list.")
+            if [r["scene_index"] for r in scenes]!=list(range(len(scenes))):
+                raise ValueError("Story scenes must be complete and ordered.")
+            if any(r["generation_status"]!="succeeded" or not r["object_key"] for r in scenes):
+                raise ValueError("Every scene must finish successfully before assembly.")
+            job_id=str(uuid.uuid4())
+            row=await (await conn.execute("""INSERT INTO story_assembly_jobs
+              (id,story_id,user_id,status,idempotency_key)
+              VALUES (%s,%s,%s,'queued',%s)
+              ON CONFLICT(user_id,idempotency_key) DO NOTHING
+              RETURNING id::text,status,output_object_key,error_code""",
+              (job_id,story_id,user_id,key))).fetchone()
+            if not row:
+                row=await (await conn.execute("""SELECT id::text,status,output_object_key,error_code
+                  FROM story_assembly_jobs WHERE user_id=%s AND idempotency_key=%s""",(user_id,key))).fetchone()
+            await conn.execute("UPDATE story_projects SET status='assembling',error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s",(story_id,user_id))
+            return {"story_id":story_id,**row}
+
+async def get_assembly_job(user_id: str, story_id: str) -> dict[str,Any]|None:
+    return await database.fetch_one("""SELECT id::text,status,output_object_key,error_code,created_at,updated_at
+      FROM story_assembly_jobs WHERE story_id=%s AND user_id=%s
+      ORDER BY created_at DESC LIMIT 1""",(story_id,user_id))
