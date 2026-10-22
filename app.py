@@ -29,6 +29,8 @@ from auth import get_authenticated_user_id
 from readiness import router as readiness_router
 from projects import router as projects_router
 from characters import router as characters_router
+from stories import router as stories_router
+import story_store
 import database
 import generation_store
 import generation_service
@@ -92,6 +94,7 @@ app.include_router(wallet_router)
 app.include_router(readiness_router)
 app.include_router(projects_router)
 app.include_router(characters_router)
+app.include_router(stories_router)
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
 PIXAZO_API_KEY = os.getenv("PIXAZO_API_KEY", "").strip()
@@ -117,6 +120,7 @@ async def _startup_database():
         await initialize_schema()
         await initialize_wallet_schema()
         await initialize_outbox_schema()
+        await story_store.initialize_story_schema()
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
