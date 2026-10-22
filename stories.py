@@ -3,7 +3,7 @@ from __future__ import annotations
 import json, uuid
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import database
 from auth import get_authenticated_user_id
 import story_store
@@ -22,6 +22,13 @@ class SceneInput(BaseModel):
     scene_index: int = Field(ge=0,lt=50)
     prompt: str = Field(min_length=1,max_length=12000)
     duration_seconds: int = Field(default=6)
+
+    @field_validator("duration_seconds")
+    @classmethod
+    def supported_duration(cls, value: int) -> int:
+        if value not in {6, 8, 10}:
+            raise ValueError("Scene duration must be 6, 8, or 10 seconds.")
+        return value
 
 class ScenesSave(BaseModel):
     model_config = ConfigDict(extra="forbid")
