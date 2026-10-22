@@ -90,9 +90,18 @@ async def get_story(user_id: str, story_id: str) -> dict[str,Any]|None:
       FROM story_projects WHERE id=%s AND user_id=%s""",(story_id,user_id))
     if not story:
         return None
-    story["scenes"] = await database.fetch_all("""SELECT id::text,scene_index,prompt,duration_seconds,status,
-      generation_id::text,result_object_key,error_code,created_at,updated_at
-      FROM story_scenes WHERE story_id=%s AND user_id=%s ORDER BY scene_index""",(story_id,user_id))
+    story["scenes"] = await database.fetch_all("""SELECT s.id::text,s.scene_index,s.prompt,s.duration_seconds,
+      CASE WHEN g.status='succeeded' THEN 'succeeded'
+           WHEN g.status='failed' THEN 'failed'
+           WHEN g.status IN ('submitting','submitted','running','submission_unknown') THEN 'generating'
+           WHEN g.status='queued' THEN 'queued'
+           ELSE s.status END AS status,
+      s.generation_id::text,COALESCE(s.result_object_key,g.result->>'object_key') AS result_object_key,
+      CASE WHEN g.status='failed' THEN COALESCE(g.error->>'code',s.error_code) ELSE s.error_code END AS error_code,
+      s.created_at,s.updated_at
+      FROM story_scenes s
+      LEFT JOIN generations g ON g.id=s.generation_id AND g.user_id=s.user_id
+      WHERE s.story_id=%s AND s.user_id=%s ORDER BY s.scene_index""",(story_id,user_id))
     return story
 
 async def save_scenes(user_id: str, story_id: str, scenes: list[dict[str,Any]]) -> dict[str,Any]|None:
