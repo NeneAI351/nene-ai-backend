@@ -111,7 +111,7 @@ def response_schema():
 
 async def generate_plan(brief: Brief) -> Plan:
     payload = {
-        "model": "gpt-4.1-mini-2025-04-14", "store": False,
+        "model": "gpt-5.4-mini-2026-03-17", "store": False,
         "max_output_tokens": 4000,
         "instructions": (
             "You are NENE AI's film director. Produce a practical, coherent production plan "
