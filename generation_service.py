@@ -22,6 +22,10 @@ class GenerationRequestConflict(ValueError):
     pass
 
 
+class GenerationPriceChanged(ValueError):
+    pass
+
+
 class InsufficientCredits(ValueError):
     pass
 
@@ -55,6 +59,7 @@ async def create_reserved_generation(
     aspect_ratio: str | None = None,
     image_url: str | None = None,
     source_image_id: str | None = None,
+    credit_limit: Decimal | None = None,
 ) -> dict[str, Any]:
     """Create one billable generation in one PostgreSQL transaction.
 
@@ -64,6 +69,10 @@ async def create_reserved_generation(
     """
     if database._pool is None:
         raise RuntimeError("Durable generation storage is required.")
+    if credit_limit is not None:
+        credit_limit = Decimal(str(credit_limit))
+        if not credit_limit.is_finite() or credit_limit <= 0 or credit_limit.quantize(Decimal("0.01")) != credit_limit:
+            raise ValueError("Credit limit must be a positive amount with at most two decimals.")
     owner = _uuid(user_id, "user identifier")
     project = _uuid(project_id, "project identifier") if project_id else None
     key = (idempotency_key or "").strip()
@@ -147,6 +156,11 @@ async def create_reserved_generation(
                 # A correctly atomic creation never commits a key without its
                 # generation. Treat legacy/interrupted records as a conflict.
                 raise GenerationRequestConflict("An earlier request with this key needs reconciliation.")
+
+            # A replay above returns the already accepted original job. A new
+            # request may never reserve more than the reviewed spending limit.
+            if credit_limit is not None and amount > credit_limit:
+                raise GenerationPriceChanged("The price increased. Review the current price before generating; no credits were reserved.")
 
             if source_asset:
                 owned_asset = await (await conn.execute(

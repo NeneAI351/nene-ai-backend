@@ -11,6 +11,7 @@ import shutil
 import socket
 import ipaddress
 from pathlib import Path
+from decimal import Decimal
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
@@ -40,7 +41,7 @@ import database
 import generation_store
 import generation_service
 import media_storage
-from generation_service import GenerationRequestConflict, InsufficientCredits
+from generation_service import GenerationRequestConflict, InsufficientCredits, GenerationPriceChanged
 from generation_outbox import initialize_outbox_schema
 
 logging.basicConfig(level=logging.INFO)
@@ -745,6 +746,19 @@ async def generate(req: GenerateRequest, request: Request, idempotency_key: Opti
     raise HTTPException(status_code=503, detail="Legacy generation is disabled. Use /api/generations with server-side credit reservations, generation ownership, and durable job recovery. Paid credits are required.")
 
 
+@app.get("/api/generation-availability")
+def generation_availability():
+    # Configuration state only: not a provider balance or worker health probe.
+    from readiness import readiness_snapshot
+    checks = readiness_snapshot(production=True)["checks"]
+    enabled = os.getenv("NENE_DURABLE_GENERATION_CREATE_ENABLED", "").strip().lower() == "true"
+    accepting = enabled and all(checks.values())
+    return {"accepting_requests": accepting, "configuration_only": True,
+            "paid_credits_required": True,
+            "message": "Paid video submissions are enabled." if accepting else
+            "Paid video generation is not enabled yet. No credits have been charged."}
+
+
 class CreateGenerationRequest(BaseModel):
     type: str = "text-to-video"
     prompt: str
@@ -756,6 +770,7 @@ class CreateGenerationRequest(BaseModel):
     aspect_ratio: Optional[str] = None
     image_url: Optional[str] = None
     source_image_id: Optional[str] = None
+    credit_limit: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)
 
 
 @app.post("/api/generations", status_code=202)
@@ -809,10 +824,13 @@ async def create_generation_endpoint(
             aspect_ratio=req.aspect_ratio,
             image_url=req.image_url,
             source_image_id=req.source_image_id,
+            credit_limit=req.credit_limit,
         )
         return result
     except InsufficientCredits as exc:
         raise HTTPException(status_code=402, detail=str(exc))
+    except GenerationPriceChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except GenerationRequestConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except LookupError as exc:
