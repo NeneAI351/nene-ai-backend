@@ -32,6 +32,7 @@ from projects import router as projects_router
 from characters import router as characters_router
 from stories import router as stories_router
 import story_store
+from director import router as director_router, initialize_director_schema
 from provider_routes import router as provider_router
 import database
 import generation_store
@@ -100,6 +101,7 @@ app.include_router(readiness_router)
 app.include_router(projects_router)
 app.include_router(characters_router)
 app.include_router(stories_router)
+app.include_router(director_router)
 app.include_router(provider_router)
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
@@ -128,6 +130,7 @@ async def _startup_database():
         await initialize_payment_schema()
         await initialize_outbox_schema()
         await story_store.initialize_story_schema()
+        await initialize_director_schema()
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
