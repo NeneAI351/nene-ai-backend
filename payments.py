@@ -13,14 +13,15 @@ import os
 import re
 import uuid
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 import database
 from billing_policy import POLICY_VERSION, REFUND_POLICY
+from account_agreement_store import require_account_agreement
 from auth import get_authenticated_user_id
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
@@ -108,9 +109,9 @@ async def initialize_payment_schema() -> None:
 
 
 class CheckoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     package_id: str = Field(min_length=1, max_length=40)
     email: str = Field(min_length=5, max_length=254)
-    accepted_policy_version: Literal["2026-10-23-paid-only-v1"]
 
 
 class VerifyRequest(BaseModel):
@@ -284,12 +285,13 @@ async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authe
     reference = "nene_" + uuid.uuid4().hex
     async with database._pool.connection() as conn:
         async with conn.transaction():
+            agreement = await require_account_agreement(conn,user_id)
             await conn.execute(
                 """INSERT INTO payment_orders
                    (id,user_id,provider,mode,reference,package_id,amount_kobo,currency,credits,status,policy_version,policy_accepted_at)
-                   VALUES (%s,%s,'paystack',%s,%s,%s,%s,'NGN',%s,'initialized',%s,NOW())""",
+                   VALUES (%s,%s,'paystack',%s,%s,%s,%s,'NGN',%s,'initialized',%s,%s)""",
                 (str(uuid.uuid4()), user_id, payment_mode(), reference, req.package_id,
-                 package["amount_kobo"], package["credits"],req.accepted_policy_version),
+                 package["amount_kobo"], package["credits"],agreement["refund_policy_version"],agreement["accepted_at"]),
             )
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:

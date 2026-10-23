@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 from database import (database_configured, start_database, close_database, initialize_schema, get_idempotency as db_get_idempotency, create_idempotency as db_create_idempotency, complete_idempotency as db_complete_idempotency, delete_idempotency as db_delete_idempotency)
 from pricing import quote as pricing_quote, catalog as pricing_catalog, package_economics, video_capacity
 from wallet import router as wallet_router
+from account_terms import router as account_terms_router
+from account_agreement_store import initialize_account_agreement_schema
 from payments import router as payments_router, initialize_payment_schema
 from wallet_store import initialize_wallet_schema
 from rate_limits import enforce_rate_limit, close_rate_limit_client
@@ -96,6 +98,7 @@ async def security_response_headers(request: Request, call_next):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     return response
 app.include_router(wallet_router)
+app.include_router(account_terms_router)
 app.include_router(payments_router)
 app.include_router(readiness_router)
 app.include_router(projects_router)
@@ -128,6 +131,7 @@ async def _startup_database():
         await initialize_schema()
         await initialize_wallet_schema()
         await initialize_payment_schema()
+        await initialize_account_agreement_schema()
         await initialize_outbox_schema()
         await story_store.initialize_story_schema()
         await initialize_director_schema()

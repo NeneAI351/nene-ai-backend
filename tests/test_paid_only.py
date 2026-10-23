@@ -42,19 +42,10 @@ async def test_director_never_calls_provider_without_positive_price(monkeypatch,
     assert response.status_code==503
     provider.assert_not_awaited()
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize('version',[None,'old-policy'])
-async def test_checkout_requires_current_policy_before_database_or_payment(monkeypatch,version):
-    api=FastAPI();api.include_router(payments.router)
-    api.dependency_overrides[payments.get_authenticated_user_id]=lambda:USER
-    database=AsyncMock(side_effect=AssertionError('Must reject first'))
-    monkeypatch.setattr(payments,'_require_database',database)
-    payload={'email':'buyer@example.test','package_id':'starter'}
-    if version is not None:payload['accepted_policy_version']=version
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api),base_url='http://test') as c:
-        response=await c.post('/api/payments/checkout',json=payload)
-    assert response.status_code==422
-    database.assert_not_awaited()
+def test_checkout_requires_no_repeat_policy_acceptance():
+    request=payments.CheckoutRequest(email="buyer@example.test",package_id="starter")
+    assert request.model_dump()=={"email":"buyer@example.test","package_id":"starter"}
+    assert 'accepted_policy_version' not in payments.CheckoutRequest.model_fields
 
 @pytest.mark.asyncio
 async def test_public_policy_preserves_required_refunds_and_credit_restoration():

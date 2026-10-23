@@ -30,6 +30,8 @@ async def paid_db(monkeypatch):
     monkeypatch.setenv('DIRECTOR_PLANNING_ENABLED','true');monkeypatch.setenv('OPENAI_API_KEY','fake')
     monkeypatch.setenv('DIRECTOR_ALLOWED_USER_IDS',user);monkeypatch.setenv('DIRECTOR_PLAN_CREDITS','10')
     monkeypatch.setattr(director,'enforce_rate_limit',AsyncMock())
+    from account_agreement_store import initialize_account_agreement_schema,record_agreement
+    await initialize_account_agreement_schema();await record_agreement(user)
     yield user
     await database.execute('DELETE FROM users WHERE id=%s',(user,))
 

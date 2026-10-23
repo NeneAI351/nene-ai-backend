@@ -11,6 +11,7 @@ import uuid
 from typing import Literal
 from decimal import Decimal, InvalidOperation
 from paid_access import paid_available
+from account_agreement_store import require_account_agreement
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -193,6 +194,7 @@ async def create_plan(brief: Brief, request: Request,
                 WHERE created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'""", (user_id,))).fetchone()
             if counts["total"] >= 20 or counts["owned"] >= 3:
                 raise HTTPException(429, "Today's AI planning limit has been reached.")
+            await require_account_agreement(conn,user_id)
             amount = plan_price()
             if amount is None:
                 raise HTTPException(503, "Paid planning pricing is not configured.")

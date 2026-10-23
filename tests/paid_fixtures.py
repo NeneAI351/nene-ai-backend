@@ -2,11 +2,14 @@ import uuid
 from decimal import Decimal
 import database
 import payments
+from account_agreement_store import initialize_account_agreement_schema,record_agreement
 from wallet_store import initialize_wallet_schema
 
 async def fund_paid(user_id, amount="500", mode="live"):
     await initialize_wallet_schema()
     await payments.initialize_payment_schema()
+    await initialize_account_agreement_schema()
+    await record_agreement(user_id)
     amount=Decimal(amount)
     if amount <= 0:
         return

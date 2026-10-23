@@ -14,6 +14,7 @@ from typing import Any
 import database
 import generation_outbox
 from paid_access import paid_available
+from account_agreement_store import require_account_agreement
 from pricing import quote as pricing_quote
 
 
@@ -108,6 +109,7 @@ async def create_reserved_generation(
 
     async with database._pool.connection() as conn:
         async with conn.transaction():
+            await require_account_agreement(conn,owner)
             # The idempotency key is scoped to the authenticated owner.
             inserted = await (await conn.execute(
                 """INSERT INTO generation_requests
