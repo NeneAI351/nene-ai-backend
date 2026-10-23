@@ -46,7 +46,7 @@ def _redis_client(url: str) -> Redis:
 def _is_production() -> bool:
     configured = os.getenv("NENE_ENV", "").strip().lower()
     if configured:
-        return configured == "production"
+        return configured in {"production", "staging"}
     return bool(os.getenv("RENDER_SERVICE_ID") or os.getenv("K_SERVICE") or os.getenv("FLY_APP_NAME"))
 
 

@@ -46,9 +46,11 @@ app = FastAPI(title="NENE AI Backend", version="0.13.0-scale-security-foundation
 
 
 def _is_production_environment() -> bool:
+    # Staging exercises the same security boundaries as production; only an
+    # explicit local development environment may use prototype compatibility.
     configured = os.getenv("NENE_ENV", "").strip().lower()
     if configured:
-        return configured == "production"
+        return configured in {"production", "staging"}
     # Hosted deployments must not silently inherit development-only defaults.
     return bool(os.getenv("RENDER_SERVICE_ID") or os.getenv("K_SERVICE") or os.getenv("FLY_APP_NAME"))
 
@@ -190,7 +192,7 @@ def health():
         "version": "0.13.0-scale-security-foundation",
         "auth_configured": bool(os.getenv("AUTH_JWKS_URL", "").strip() and os.getenv("AUTH_ISSUER", "").strip()),
         "shared_rate_limit_configured": bool(os.getenv("REDIS_URL", "").strip() and os.getenv("RATE_LIMIT_HMAC_SECRET", "").strip()),
-        "environment": "production" if _is_production_environment() else os.getenv("NENE_ENV", "development").strip().lower(),
+        "environment": os.getenv("NENE_ENV", "").strip().lower() or ("production" if _is_production_environment() else "development"),
         "database_configured": database_configured(),
         "provider": configured[0] if configured else "none",
         "providers": configured,

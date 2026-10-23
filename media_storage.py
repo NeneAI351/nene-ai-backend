@@ -68,7 +68,7 @@ def validate_provider_media_url(url: str) -> str:
     if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
         raise ValueError("Provider media host is not public.")
     allowed = [h.strip().lower().rstrip(".") for h in os.getenv("ALLOWED_MEDIA_HOSTS", "").split(",") if h.strip()]
-    production = os.getenv("NENE_ENV", "").strip().lower() == "production"
+    production = os.getenv("NENE_ENV", "").strip().lower() in {"production", "staging"}
     if production and not allowed:
         raise MediaStorageNotConfigured("ALLOWED_MEDIA_HOSTS must be configured in production.")
     if allowed and not any(host == item or host.endswith("." + item) for item in allowed):
