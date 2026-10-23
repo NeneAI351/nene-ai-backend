@@ -93,6 +93,7 @@ async def test_provider_contract_and_sanitized_failures(monkeypatch,enabled,mode
         async def __aexit__(self,*args):pass
         async def post(self,url,headers,json):
             assert url=='https://api.openai.com/v1/responses'
+            assert json['model']=='gpt-5.4-mini-2026-03-17'
             assert json['store'] is False and json['max_output_tokens']==4000
             assert not json.get('tools')
             if mode=='timeout':raise httpx.ReadTimeout('unit-test-secret')

@@ -22,7 +22,7 @@ No video/audio/music/subtitle rendering or wallet debit occurs when planning.
    repeated submission/recovery and absence of any video/credit side effects.
 
 Provider integration uses the fixed HTTPS OpenAI Responses endpoint, pinned
-`gpt-4.1-mini-2025-04-14`, strict structured output, `store:false`, 4,000 output
+`gpt-5.4-mini-2026-03-17`, strict structured output, `store:false`, 4,000 output
 tokens, 6,000 input characters, 2–6 scenes, no tools and no automatic retry.
 Three attempts per approved account/day and twenty globally/day are enforced
 under a PostgreSQL advisory transaction lock. Failed and uncertain attempts
@@ -38,4 +38,4 @@ planning: a text plan does not require a video worker.
 
 Official API references:
 https://developers.openai.com/api/docs/guides/structured-outputs
-https://developers.openai.com/api/docs/models/gpt-4.1-mini
+https://developers.openai.com/api/docs/models/gpt-5.4-mini
