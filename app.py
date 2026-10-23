@@ -684,67 +684,8 @@ def _run_ffmpeg(args: list[str], timeout: int = 300):
 
 @app.post("/api/story/assemble")
 async def assemble_story(req: StoryAssembleRequest, request: Request):
-    await enforce_rate_limit(request, bucket="story-assemble", limit=3, window_seconds=60)
-    if _is_production_environment():
-        await get_authenticated_user_id(request)
-    _cleanup_story_storage()
-    urls = [str(url).strip() for url in (req.scene_urls or []) if str(url).strip()]
-    if not urls:
-        raise HTTPException(status_code=400, detail="At least one completed story scene is required.")
-    if len(urls) > 20:
-        raise HTTPException(status_code=400, detail="A prototype story can contain at most 20 scenes.")
-    if len(set(urls)) != len(urls):
-        raise HTTPException(status_code=400, detail="Duplicate scene URLs were supplied. Refusing to assemble duplicate clips.")
-
-    work_dir = Path(tempfile.mkdtemp(prefix="nene_story_"))
-    normalized = []
-    try:
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-            for index, url in enumerate(urls, start=1):
-                source = work_dir / f"source_{index:02d}.mp4"
-                normalized_file = work_dir / f"scene_{index:02d}.mp4"
-                await _download_story_clip(client, url, source)
-                # Normalize every clip so different provider encoders/resolutions do
-                # not make the concat step fail. Keep the user's scene order.
-                # Story scenes currently come from providers with audio disabled.
-                # Normalize them to a video-only stream so every clip has identical
-                # stream layout and FFmpeg concat remains deterministic.
-                _run_ffmpeg([
-                    "-i", str(source),
-                    "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-                    "-r", "30",
-                    "-an",
-                    "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "22",
-                    "-movflags", "+faststart",
-                    str(normalized_file),
-                ], timeout=180)
-                normalized.append(normalized_file)
-
-        concat_file = work_dir / "concat.txt"
-        concat_file.write_text(
-            "".join("file '" + str(path).replace("'", "'\\''") + "'\n" for path in normalized),
-            encoding="utf-8",
-        )
-        output_name = f"{uuid.uuid4().hex}_{_safe_story_filename(req.title)}.mp4"
-        output_path = STORY_VIDEO_DIR / output_name
-        _run_ffmpeg([
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
-            "-c", "copy",
-            "-movflags", "+faststart",
-            str(output_path),
-        ], timeout=300)
-        return {
-            "ok": True,
-            "video_url": f"https://nene-ai.onrender.com/api/story-videos/{output_name}",
-            "scene_count": len(urls),
-            "title": req.title,
-        }
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+    await get_authenticated_user_id(request)
+    raise HTTPException(status_code=503, detail="Legacy story assembly is disabled. Use the authenticated durable story workflow with paid scene generations.")
 
 
 @app.get("/api/story-videos/{name}")
@@ -795,95 +736,10 @@ async def _generate_uncached(req: GenerateRequest, kind: str):
 
 @app.post("/api/generate")
 async def generate(req: GenerateRequest, request: Request, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
-    await enforce_rate_limit(request, bucket="generate", limit=5, window_seconds=60)
-    if _is_production_environment():
-        await get_authenticated_user_id(request)
-        raise HTTPException(status_code=503, detail="Production video generation is disabled until server-side credit reservations, generation ownership, and durable job recovery are integrated.")
-    kind = req.type.lower().strip()
-    if kind not in {"text-to-video", "image-to-video"}:
-        raise HTTPException(status_code=400, detail="Supported types: text-to-video, image-to-video")
+    # Retired in every environment: this path bypassed atomic wallet billing.
+    await get_authenticated_user_id(request)
+    raise HTTPException(status_code=503, detail="Legacy generation is disabled. Use /api/generations with server-side credit reservations, generation ownership, and durable job recovery. Paid credits are required.")
 
-    key = (idempotency_key or "").strip()
-    if not key:
-        return await _generate_uncached(req, kind)
-    if len(key) > 200:
-        raise HTTPException(status_code=400, detail="Idempotency-Key is too long.")
-
-    request_fingerprint = json.dumps(req.model_dump(), sort_keys=True, default=str)
-
-    # Same-process joining is kept in memory. PostgreSQL makes completed
-    # idempotency durable across Render restarts and backend instances.
-    if database_configured():
-        try:
-            durable = await db_get_idempotency(key)
-        except Exception as exc:
-            logger.exception("Database idempotency lookup failed.")
-            raise HTTPException(status_code=503, detail=f"NENE AI database is unavailable: {exc}")
-        if durable:
-            if durable.get("request_fingerprint") != request_fingerprint:
-                raise HTTPException(status_code=409, detail="This Idempotency-Key was already used for a different generation request.")
-            if durable.get("response") is not None:
-                return durable["response"]
-            raise HTTPException(status_code=409, detail="This generation is already in progress. Do not submit it again.")
-        try:
-            inserted = await db_create_idempotency(key, request_fingerprint, str(uuid.uuid4()))
-        except Exception as exc:
-            logger.exception("Database idempotency reservation failed.")
-            raise HTTPException(status_code=503, detail=f"NENE AI database is unavailable: {exc}")
-        if not inserted:
-            durable = await db_get_idempotency(key)
-            if durable and durable.get("request_fingerprint") != request_fingerprint:
-                raise HTTPException(status_code=409, detail="This Idempotency-Key was already used for a different generation request.")
-            if durable and durable.get("response") is not None:
-                return durable["response"]
-            raise HTTPException(status_code=409, detail="This generation is already in progress. Do not submit it again.")
-
-    async with GENERATION_IDEMPOTENCY_LOCK:
-        existing = GENERATION_IDEMPOTENCY.get(key)
-        if existing:
-            if existing.get("fingerprint") != request_fingerprint:
-                raise HTTPException(status_code=409, detail="This Idempotency-Key was already used for a different generation request.")
-            task = existing.get("task")
-            if task is None:
-                return existing["response"]
-        else:
-            task = asyncio.create_task(_generate_uncached(req, kind))
-            GENERATION_IDEMPOTENCY[key] = {
-                "fingerprint": request_fingerprint,
-                "task": task,
-                "created_at": asyncio.get_running_loop().time(),
-            }
-            _trim_idempotency_registry()
-
-    try:
-        response = await task
-    except Exception:
-        async with GENERATION_IDEMPOTENCY_LOCK:
-            current = GENERATION_IDEMPOTENCY.get(key)
-            if current and current.get("task") is task:
-                GENERATION_IDEMPOTENCY.pop(key, None)
-        if database_configured():
-            try:
-                await db_delete_idempotency(key)
-            except Exception:
-                logger.exception("Failed to clear durable idempotency reservation after generation failure.")
-        raise
-
-    async with GENERATION_IDEMPOTENCY_LOCK:
-        current = GENERATION_IDEMPOTENCY.get(key)
-        if current and current.get("task") is task:
-            current["response"] = response
-            current["task"] = None
-            current["created_at"] = asyncio.get_running_loop().time()
-
-    if database_configured():
-        try:
-            await db_complete_idempotency(key, response)
-        except Exception:
-            # Provider work is already accepted; never turn a successful
-            # generation into an apparent failure that could cause a retry.
-            logger.exception("Generation completed but durable idempotency could not be saved.")
-    return response
 
 class CreateGenerationRequest(BaseModel):
     type: str = "text-to-video"

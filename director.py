@@ -1,4 +1,4 @@
-"""Account-owned AI production plans. Planning never queues or charges a video.
+"""Account-owned AI production plans. Planning uses paid credits; it never queues a video.
 
 Disabled until an operator provisions a funded model account and explicitly
 allows beta users. Durable request keys prevent silent repeated provider calls.
@@ -9,6 +9,8 @@ import json
 import os
 import uuid
 from typing import Literal
+from decimal import Decimal, InvalidOperation
+from paid_access import paid_available
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -57,6 +59,8 @@ async def initialize_director_schema():
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE(user_id,request_key)
     );
+    ALTER TABLE director_plans ADD COLUMN IF NOT EXISTS credit_cost NUMERIC(14,2) NOT NULL DEFAULT 0;
+    ALTER TABLE director_plans ADD COLUMN IF NOT EXISTS billing_state TEXT NOT NULL DEFAULT 'none';
     CREATE INDEX IF NOT EXISTS idx_director_owner_created
     ON director_plans(user_id,created_at DESC);
     -- The browser must use the owner-checked API, not Supabase's Data API.
@@ -65,11 +69,21 @@ async def initialize_director_schema():
     """)
 
 
+def plan_price() -> Decimal | None:
+    # No guessed price: an operator must first validate costs and set the price.
+    try:
+        value = Decimal(os.getenv("DIRECTOR_PLAN_CREDITS", ""))
+        if value.is_finite() and 0 < value <= 100000 and value.quantize(Decimal("0.01")) == value:
+            return value
+    except (InvalidOperation, ValueError):
+        pass
+    return None
+
 def available_for(user_id: str) -> bool:
     allowed = {x.strip() for x in os.getenv("DIRECTOR_ALLOWED_USER_IDS", "").split(",") if x.strip()}
     return (os.getenv("DIRECTOR_PLANNING_ENABLED", "false").lower() == "true"
             and bool(os.getenv("OPENAI_API_KEY", "").strip())
-            and user_id in allowed)
+            and user_id in allowed and plan_price() is not None)
 
 
 def public_record(row: dict) -> dict:
@@ -78,8 +92,10 @@ def public_record(row: dict) -> dict:
 @router.get("/status")
 async def status(user_id: str = Depends(get_authenticated_user_id)):
     return {"available": available_for(user_id), "video_generation_included": False,
-            "message": "AI planning is ready." if available_for(user_id) else
-            "AI Director is not enabled for this account yet. Your idea has not been sent and no credits have been charged."}
+            "credit_cost": str(plan_price()) if plan_price() is not None else None,
+            "paid_credits_required": True,
+            "message": f"Each new production plan costs {plan_price()} paid credits. Video generation is charged separately." if available_for(user_id) else
+            "AI Director paid planning is not enabled for this account yet. Your idea has not been sent and no credits have been charged."}
 
 @router.get("/plans")
 async def list_plans(user_id: str = Depends(get_authenticated_user_id)):
@@ -132,7 +148,7 @@ async def generate_plan(brief: Brief) -> Plan:
             response = await client.post("https://api.openai.com/v1/responses",
                 headers={"Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]}, json=payload)
         if response.status_code != 200:
-            raise HTTPException(502, "The planning service could not complete this request. No video credits were charged.")
+            raise HTTPException(502, "The planning service could not complete this request. No usable plan was delivered; reserved planning credits will be restored.")
         data = response.json()
         if data.get("status") != "completed":
             raise HTTPException(502, "The planning response was incomplete. No plan was saved.")
@@ -149,7 +165,7 @@ async def generate_plan(brief: Brief) -> Plan:
         raise HTTPException(504, "Planning timed out. It will not retry automatically; check saved plans before trying a new request.") from None
     except (httpx.HTTPError, ValueError, KeyError, TypeError, ValidationError):
         # Provider bodies, keys, prompts and raw exception messages never escape.
-        raise HTTPException(502, "The planning service returned an unusable response. No video credits were charged.") from None
+        raise HTTPException(502, "The planning service returned an unusable response. No usable plan was delivered; reserved planning credits will be restored.") from None
 
 @router.post("/plans", status_code=201)
 async def create_plan(brief: Brief, request: Request,
@@ -177,16 +193,55 @@ async def create_plan(brief: Brief, request: Request,
                 WHERE created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'""", (user_id,))).fetchone()
             if counts["total"] >= 20 or counts["owned"] >= 3:
                 raise HTTPException(429, "Today's AI planning limit has been reached.")
+            amount = plan_price()
+            if amount is None:
+                raise HTTPException(503, "Paid planning pricing is not configured.")
+            await conn.execute("INSERT INTO wallets(user_id) VALUES (%s) ON CONFLICT(user_id) DO NOTHING", (user_id,))
+            wallet = await (await conn.execute("SELECT available_credits,reserved_credits,lifetime_consumed FROM wallets WHERE user_id=%s FOR UPDATE", (user_id,))).fetchone()
+            if await paid_available(conn, user_id, wallet) < amount:
+                raise HTTPException(402, "Insufficient paid credits. Purchase credits before creating a plan.")
             row = await (await conn.execute("""INSERT INTO director_plans
-                (id,user_id,request_key,request_hash,brief,status) VALUES (%s,%s,%s,%s,%s::jsonb,'pending')
+                (id,user_id,request_key,request_hash,brief,status,credit_cost,billing_state) VALUES (%s,%s,%s,%s,%s::jsonb,'pending',%s,'reserved')
                 ON CONFLICT(user_id,request_key) DO NOTHING RETURNING id::text""",
-                (str(uuid.uuid4()),user_id,str(idempotency_key),digest,brief.model_dump_json()))).fetchone()
+                (str(uuid.uuid4()),user_id,str(idempotency_key),digest,brief.model_dump_json(),amount))).fetchone()
             if row is None:
                 raise HTTPException(409, "This planning request is already being processed.")
+            await conn.execute("UPDATE wallets SET available_credits=available_credits-%s,reserved_credits=reserved_credits+%s,updated_at=NOW() WHERE user_id=%s", (amount,amount,user_id))
+            await planning_ledger(conn, user_id, row["id"], 'reserve', -amount, Decimal(wallet['available_credits'])-amount)
     try:
         plan = await generate_plan(brief)
-        await database.execute("UPDATE director_plans SET status='succeeded',plan=%s::jsonb WHERE id=%s AND user_id=%s", (plan.model_dump_json(),row["id"],user_id))
     except HTTPException:
-        await database.execute("UPDATE director_plans SET status='failed' WHERE id=%s AND user_id=%s",(row["id"],user_id))
+        await settle_plan(user_id, row["id"], None)
         raise
+    # Saving the plan and capturing credits commit together. If the process or
+    # database fails after provider acceptance, the pending reservation is held
+    # for reconciliation, never silently resubmitted or charged a second time.
+    await settle_plan(user_id, row["id"], plan)
     return {"id":row["id"],"status":"succeeded","brief":brief.model_dump(),"plan":plan.model_dump()}
+
+
+async def planning_ledger(conn, user_id, plan_id, kind, amount, balance):
+    await conn.execute("""INSERT INTO credit_ledger
+        (id,user_id,generation_id,entry_type,amount,balance_after,metadata,operation_key)
+        VALUES (%s,%s,NULL,%s,%s,%s,%s::jsonb,%s)""",
+        (str(uuid.uuid4()),user_id,kind,amount,balance,
+         json.dumps({"plan_id":plan_id,"operation_type":kind}), f"director:{plan_id}:{kind}"))
+
+async def settle_plan(user_id: str, plan_id: str, plan: Plan | None):
+    async with database._pool.connection() as conn:
+        async with conn.transaction():
+            row = await (await conn.execute("SELECT credit_cost,billing_state FROM director_plans WHERE id=%s AND user_id=%s FOR UPDATE", (plan_id,user_id))).fetchone()
+            if not row or row['billing_state'] != 'reserved':
+                return
+            wallet = await (await conn.execute("SELECT available_credits,reserved_credits FROM wallets WHERE user_id=%s FOR UPDATE",(user_id,))).fetchone()
+            amount = Decimal(row['credit_cost'])
+            if Decimal(wallet['reserved_credits']) < amount:
+                raise RuntimeError('Planning reservation requires reconciliation.')
+            if plan is not None:
+                await conn.execute("UPDATE wallets SET reserved_credits=reserved_credits-%s,lifetime_consumed=lifetime_consumed+%s,updated_at=NOW() WHERE user_id=%s", (amount,amount,user_id))
+                await planning_ledger(conn,user_id,plan_id,'capture',-amount,wallet['available_credits'])
+                await conn.execute("UPDATE director_plans SET status='succeeded',plan=%s::jsonb,billing_state='captured' WHERE id=%s AND user_id=%s", (plan.model_dump_json(),plan_id,user_id))
+            else:
+                await conn.execute("UPDATE wallets SET reserved_credits=reserved_credits-%s,available_credits=available_credits+%s,updated_at=NOW() WHERE user_id=%s", (amount,amount,user_id))
+                await planning_ledger(conn,user_id,plan_id,'release',amount,Decimal(wallet['available_credits'])+amount)
+                await conn.execute("UPDATE director_plans SET status='failed',billing_state='released' WHERE id=%s AND user_id=%s",(plan_id,user_id))

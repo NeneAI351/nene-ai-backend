@@ -28,3 +28,18 @@ async def get_wallet_ledger(limit: int = 50, user_id: str = Depends(authenticate
     if not database_configured():
         raise HTTPException(status_code=503, detail="NENE AI database is not configured.")
     return {"items": await wallet_ledger(user_id, max(1, min(limit, 100)))}
+
+
+@router.get("/paid")
+async def get_paid_wallet(user_id: str = Depends(authenticated_user_id)):
+    if not database_configured():
+        raise HTTPException(503, "NENE AI database is not configured.")
+    import database
+    from wallet_store import ensure_wallet
+    from paid_access import paid_available
+    await ensure_wallet(user_id)
+    async with database._pool.connection() as conn:
+        async with conn.transaction():
+            row = await (await conn.execute("SELECT available_credits,reserved_credits,lifetime_consumed FROM wallets WHERE user_id=%s FOR UPDATE", (user_id,))).fetchone()
+            spendable = await paid_available(conn,user_id,row)
+    return {"ok":True,"paid_available_credits":str(spendable),"free_generation":False}
