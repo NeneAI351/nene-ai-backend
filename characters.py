@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 import database
 from auth import get_authenticated_user_id
 import character_store
+from account_profile import ProfileUpdate
 
 router = APIRouter(prefix="/api/characters", tags=["characters"])
 MAX_PROFILE_BYTES = 16_384
@@ -18,6 +19,7 @@ MAX_PROFILE_BYTES = 16_384
 
 class CharacterCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    id: Optional[uuid.UUID] = None
     name: str = Field(min_length=1, max_length=120)
     project_id: Optional[uuid.UUID] = None
     profile: dict[str, Any] = Field(default_factory=dict)
@@ -38,8 +40,19 @@ def _clean_name(value: str) -> str:
 
 
 def _validate_profile(profile: dict[str, Any]) -> dict[str, Any]:
+    # Reference bytes stay inside owner-protected PostgreSQL storage, never a
+    # public asset URL. Apply the same bounded image validation as profile photos.
+    description = dict(profile)
+    reference = description.pop("referenceImage", None)
+    if reference is not None:
+        try:
+            if not isinstance(reference, str):
+                raise ValueError("Invalid reference image")
+            ProfileUpdate(photo=reference)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Choose a PNG, JPEG or WebP reference under 400 KB.")
     try:
-        encoded = json.dumps(profile, allow_nan=False, separators=(",", ":"))
+        encoded = json.dumps(description, allow_nan=False, separators=(",", ":"))
     except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail="Character profile must be valid JSON.")
     if len(encoded.encode("utf-8")) > MAX_PROFILE_BYTES:
@@ -92,11 +105,13 @@ async def create_character(
     try:
         character = await character_store.create_character(
             user_id,
-            str(uuid.uuid4()),
+            str(body.id or uuid.uuid4()),
             str(body.project_id) if body.project_id else None,
             name,
             profile,
         )
+    except ValueError:
+        raise HTTPException(status_code=409, detail="This character save ID was already used. Reload your characters before saving again.")
     except RuntimeError:
         raise _database_unavailable()
     if character is None:
@@ -173,3 +188,4 @@ async def remove_character(
     if not deleted:
         raise HTTPException(status_code=404, detail="Character not found.")
     return None
+

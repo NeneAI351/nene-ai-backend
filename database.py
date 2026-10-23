@@ -107,6 +107,8 @@ async def initialize_schema() -> None:
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_characters_user ON characters(user_id);
+    ALTER TABLE characters ENABLE ROW LEVEL SECURITY;
+    REVOKE ALL ON characters FROM PUBLIC;
 
     CREATE TABLE IF NOT EXISTS generations (
         id UUID PRIMARY KEY,
@@ -275,3 +277,4 @@ async def complete_idempotency(key: str, response: dict[str, Any], generation_id
 
 async def delete_idempotency(key: str) -> None:
     await execute("DELETE FROM generation_idempotency WHERE idempotency_key = %s", (key,))
+
