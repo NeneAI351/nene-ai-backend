@@ -171,3 +171,30 @@ async def test_user_cannot_use_another_owners_private_source_asset(generation_se
             generation_type="image-to-video",
             source_image_id=asset_id,
         )
+
+
+@pytest.mark.asyncio
+async def test_reviewed_credit_limit_blocks_higher_price_without_side_effects(generation_service_db):
+    user_id=await _user_with_credits("500.00")
+    kwargs=dict(prompt="Advertisement for a neighbourhood bakery",provider="ltx",model="ltx-2-5-fast",resolution="720p",duration_seconds=6)
+    price=Decimal(generation_service.pricing_quote('ltx','ltx-2-5-fast','720p',6)['recommended_credits'])
+    with pytest.raises(generation_service.GenerationPriceChanged):
+        await generation_service.create_reserved_generation(user_id,'ad-price-change',credit_limit=price-Decimal('0.01'),**kwargs)
+    assert (await database.fetch_one('SELECT COUNT(*) AS n FROM generations WHERE user_id=%s',(user_id,)))['n']==0
+    assert (await database.fetch_one('SELECT COUNT(*) AS n FROM generation_requests WHERE user_id=%s',(user_id,)))['n']==0
+    wallet=await database.fetch_one('SELECT available_credits,reserved_credits FROM wallets WHERE user_id=%s',(user_id,))
+    assert Decimal(wallet['available_credits'])==500 and Decimal(wallet['reserved_credits'])==0
+
+
+@pytest.mark.asyncio
+async def test_reviewed_price_replay_never_queues_or_charges_again(generation_service_db,monkeypatch):
+    user_id=await _user_with_credits("500.00")
+    kwargs=dict(prompt="Advertisement for a neighbourhood bakery",provider="ltx",model="ltx-2-5-fast",resolution="720p",duration_seconds=6)
+    original=generation_service.pricing_quote('ltx','ltx-2-5-fast','720p',6)
+    limit=Decimal(original['recommended_credits'])
+    first=await generation_service.create_reserved_generation(user_id,'ad-safe-retry',credit_limit=limit,**kwargs)
+    monkeypatch.setattr(generation_service,'pricing_quote',lambda *a,**kw:dict(original,recommended_credits=str(limit+100)))
+    replay=await generation_service.create_reserved_generation(user_id,'ad-safe-retry',credit_limit=limit,**kwargs)
+    assert replay['generation_id']==first['generation_id'] and replay['duplicate'] is True
+    assert replay['credits_reserved']==first['credits_reserved']
+    assert (await database.fetch_one('SELECT COUNT(*) AS n FROM generation_outbox WHERE generation_id=%s',(first['generation_id'],)))['n']==1
