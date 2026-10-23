@@ -119,9 +119,26 @@ def test_staging_mode_is_reported_distinctly(monkeypatch):
     clear_readiness_env(monkeypatch)
     monkeypatch.setenv("NENE_ENV", "staging")
     snapshot = readiness.readiness_snapshot(production=None, database_ready=False)
-    assert snapshot["ready"] is True
+    assert snapshot["ready"] is False
     assert snapshot["mode"] == "staging"
     assert not any(snapshot["checks"].values())
+
+
+def test_staging_ready_only_with_all_dependencies_configured(monkeypatch):
+    clear_readiness_env(monkeypatch)
+    monkeypatch.setenv("NENE_ENV", "staging")
+    configure_production_dependencies(monkeypatch)
+    snapshot = readiness.readiness_snapshot(database_ready=True)
+    assert snapshot["mode"] == "staging"
+    assert snapshot["ready"] is True
+
+
+def test_staging_endpoint_returns_503_for_incomplete_configuration(monkeypatch):
+    clear_readiness_env(monkeypatch)
+    monkeypatch.setenv("NENE_ENV", "staging")
+    monkeypatch.setattr(readiness, "database_configured", lambda: False)
+    response = readiness.readiness()
+    assert response.status_code == 503
 
 
 def test_readiness_does_not_expose_secret_values(monkeypatch):

@@ -81,7 +81,10 @@ def readiness_snapshot(*, production=None, database_ready=None):
         "ltx_provider_configured": ltx_provider_ready,
         "private_media_storage_configured": media_storage_ready,
     }
-    ready = all(checks.values()) if production else True
+    # Staging is where the full launch journey is verified. A green response
+    # with missing account/provider dependencies must not be mistaken for a
+    # usable staging deployment. Development can still run isolated features.
+    ready = all(checks.values()) if production or configured_env == "staging" else True
 
     if production:
         mode = "production"

@@ -7,7 +7,7 @@ Decision: **NO GO for public store release.** This is evidence of an audit, not 
 The isolated verification candidate combines the current main/wallet integration and generation-validation fix with the durable Story, guarded Paystack, and provider-routing branches. Import/router conflicts were resolved by preserving both Story and provider routers. No existing feature branch or production main was modified.
 
 - Backend local command: `PYTHONPATH=../test-deps:. python -m pytest -q`
-- Result: **171 passed, 29 skipped**. The skipped tests require PostgreSQL. A separate combined-release workflow uses disposable PostgreSQL; only a completed run can establish its result.
+- Latest combined local result: **173 passed, 29 skipped**. The skipped tests require PostgreSQL. This includes two further readiness regressions added after live probes found staging reported ready despite missing dependencies. A separate combined-release workflow uses disposable PostgreSQL; only a completed run can establish its result.
 - Routing duration tests now configure an inert test API key explicitly. They never submit provider work.
 - Frontend candidate: Story branch plus current main and the installation manifest fix. JavaScript syntax and corrected manifest JSON validation pass. These are not browser or Android device tests.
 - Backend source compiles; this does not establish external-service connectivity.
@@ -33,7 +33,7 @@ The isolated verification candidate combines the current main/wallet integration
 
 ## Live probes and environment limits
 
-Production and staging Render health requests timed out from this execution environment (20-second first attempt). This establishes inability to verify reachability here, **not proof that either service is globally down**. The first readiness probe used `/api/readiness`; source review shows the implemented endpoint is `/api/ready`, so the incorrect path is not readiness evidence. A follow-up targets the correct path.
+Initial requests timed out; follow-up probes succeeded with HTTP 200. Production `/api/health` reported version `0.9.0-postgres-foundation` and `database_configured: false`. Staging `/api/health` reported version `0.13.0-scale-security-foundation`, `database_configured: false`, `auth_configured: false`, `shared_rate_limit_configured: false`, no configured provider and no provider credentials. Staging `/api/ready` reported private storage configured, but all four other dependency checks false. It nevertheless returned `ready: true` because staging bypassed the readiness gate. The candidate fixes this misleading staging status: incomplete staging now returns HTTP 503. This does not configure any missing service or change the deployed service. The initial `/api/readiness` path was incorrect and is not used as readiness evidence.
 
 The public GitHub Pages manifest was directly retrieved and inspected. No signed-in user actions or provider API calls were made. Browser installation failed because downloaded archives were invalid; no browser interaction is claimed. Local PostgreSQL package installation was unavailable; skipped tests are not passes.
 
