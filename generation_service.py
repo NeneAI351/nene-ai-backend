@@ -13,6 +13,7 @@ from typing import Any
 
 import database
 import generation_outbox
+from paid_access import paid_available
 from pricing import quote as pricing_quote
 
 
@@ -179,13 +180,13 @@ async def create_reserved_generation(
                 (owner,),
             )
             wallet = await (await conn.execute(
-                "SELECT available_credits,reserved_credits FROM wallets WHERE user_id=%s FOR UPDATE",
+                "SELECT available_credits,reserved_credits,lifetime_consumed FROM wallets WHERE user_id=%s FOR UPDATE",
                 (owner,),
             )).fetchone()
             available = Decimal(wallet["available_credits"])
             reserved = Decimal(wallet["reserved_credits"])
-            if available < amount:
-                raise InsufficientCredits("Insufficient available credits for this generation.")
+            if amount <= 0 or await paid_available(conn, owner, wallet) < amount:
+                raise InsufficientCredits("Insufficient paid credits. Purchase credits before generating.")
             available -= amount
             reserved += amount
             await conn.execute(

@@ -62,6 +62,7 @@ async def create_order(user_id, *, reference=None, amount_kobo=500000, credits="
 def successful_transaction(reference, *, transaction_id=987654321, amount=500000, currency="NGN"):
     return {
         "reference": reference,
+        "domain": "test",
         "status": "success",
         "id": transaction_id,
         "amount": amount,

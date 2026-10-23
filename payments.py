@@ -13,13 +13,14 @@ import os
 import re
 import uuid
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import database
+from billing_policy import POLICY_VERSION, REFUND_POLICY
 from auth import get_authenticated_user_id
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
@@ -96,6 +97,8 @@ async def initialize_payment_schema() -> None:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 );
                 ALTER TABLE payment_orders ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'test' CHECK (mode IN ('test','live'));
+                ALTER TABLE payment_orders ADD COLUMN IF NOT EXISTS policy_version TEXT;
+                ALTER TABLE payment_orders ADD COLUMN IF NOT EXISTS policy_accepted_at TIMESTAMPTZ;
                 CREATE INDEX IF NOT EXISTS idx_payment_orders_user_created
                     ON payment_orders(user_id, created_at DESC);
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_orders_provider_tx
@@ -107,6 +110,7 @@ async def initialize_payment_schema() -> None:
 class CheckoutRequest(BaseModel):
     package_id: str = Field(min_length=1, max_length=40)
     email: str = Field(min_length=5, max_length=254)
+    accepted_policy_version: Literal["2026-10-23-paid-only-v1"]
 
 
 class VerifyRequest(BaseModel):
@@ -168,12 +172,14 @@ async def _fulfill_verified_transaction(transaction: dict[str, Any]) -> dict[str
         async with conn.transaction():
             order = await (await conn.execute(
                 """SELECT id::text,user_id::text,package_id,amount_kobo,currency,credits,status,
-                          provider_transaction_id
+                          provider_transaction_id,mode
                    FROM payment_orders WHERE reference=%s FOR UPDATE""",
                 (reference,),
             )).fetchone()
             if not order:
                 raise HTTPException(status_code=404, detail="Payment order was not found.")
+            if transaction.get("domain") != order["mode"]:
+                raise HTTPException(status_code=400, detail="Payment environment does not match the order.")
             if amount_kobo != int(order["amount_kobo"]):
                 raise HTTPException(status_code=400, detail="Paid amount does not match the order.")
             if "NGN" != order["currency"]:
@@ -247,9 +253,16 @@ async def _fulfill_verified_transaction(transaction: dict[str, Any]) -> dict[str
                     "available_credits": str(new_balance)}
 
 
+@router.get("/policy")
+async def billing_policy():
+    return {"version": POLICY_VERSION, "refund_policy": REFUND_POLICY,
+            "free_generation": False, "failed_generation_credit_restoration": True}
+
+
 @router.get("/packages")
 async def list_credit_packages():
     return {"ok": True, "currency": "NGN", "mode": payment_mode(),
+            "policy_version": POLICY_VERSION, "refund_policy": REFUND_POLICY,
             "packages": [{"id": key, "name": value["label"],
                           "amount_kobo": value["amount_kobo"],
                           "amount_ngn": value["amount_kobo"] // 100,
@@ -273,10 +286,10 @@ async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authe
         async with conn.transaction():
             await conn.execute(
                 """INSERT INTO payment_orders
-                   (id,user_id,provider,mode,reference,package_id,amount_kobo,currency,credits,status)
-                   VALUES (%s,%s,'paystack',%s,%s,%s,%s,'NGN',%s,'initialized')""",
+                   (id,user_id,provider,mode,reference,package_id,amount_kobo,currency,credits,status,policy_version,policy_accepted_at)
+                   VALUES (%s,%s,'paystack',%s,%s,%s,%s,'NGN',%s,'initialized',%s,NOW())""",
                 (str(uuid.uuid4()), user_id, payment_mode(), reference, req.package_id,
-                 package["amount_kobo"], package["credits"]),
+                 package["amount_kobo"], package["credits"],req.accepted_policy_version),
             )
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:

@@ -39,3 +39,12 @@ planning: a text plan does not require a video worker.
 Official API references:
 https://developers.openai.com/api/docs/guides/structured-outputs
 https://developers.openai.com/api/docs/models/gpt-5.4-mini
+
+
+Paid-only update (2026-10-23): new planning requests require DIRECTOR_PLAN_CREDITS,
+a positive server-owned price validated against real costs. Without that setting,
+planning remains disabled even when an API key and allowlist exist. Test payments
+and bonus credits cannot pay for plans or video generation. Do not set a live price
+or enable live sales until the full paid journey and cost/margin are verified.
+Pending plans after a crash hold their reservation for manual reconciliation; do
+not resubmit them to the provider. Captures and releases are idempotent.

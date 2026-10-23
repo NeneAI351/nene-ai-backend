@@ -9,6 +9,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 import database
 import director
+from paid_fixtures import fund_paid
 from test_director import BRIEF, PLAN
 
 @pytest_asyncio.fixture
@@ -17,13 +18,14 @@ async def director_db():
     await database.start_database();await database.initialize_schema();await director.initialize_director_schema()
     user=str(uuid.uuid4());other=str(uuid.uuid4())
     await database.execute('INSERT INTO users(id) VALUES (%s),(%s)',(user,other))
+    await fund_paid(user)
     yield user,other
     await database.execute('DELETE FROM users WHERE id IN (%s,%s)',(user,other))
 
 @pytest.mark.asyncio
 async def test_durable_replay_ownership_and_changed_brief(director_db,monkeypatch):
     user,other=director_db
-    monkeypatch.setenv('DIRECTOR_PLANNING_ENABLED','true');monkeypatch.setenv('OPENAI_API_KEY','fake')
+    monkeypatch.setenv('DIRECTOR_PLAN_CREDITS','10');monkeypatch.setenv('DIRECTOR_PLANNING_ENABLED','true');monkeypatch.setenv('OPENAI_API_KEY','fake')
     monkeypatch.setenv('DIRECTOR_ALLOWED_USER_IDS',user)
     provider=AsyncMock(return_value=director.Plan(**PLAN));monkeypatch.setattr(director,'generate_plan',provider)
     monkeypatch.setattr(director,'enforce_rate_limit',AsyncMock())
@@ -45,7 +47,7 @@ async def test_durable_replay_ownership_and_changed_brief(director_db,monkeypatc
 @pytest.mark.asyncio
 async def test_concurrent_duplicate_calls_model_once(director_db,monkeypatch):
     user,_=director_db
-    monkeypatch.setenv('DIRECTOR_PLANNING_ENABLED','true');monkeypatch.setenv('OPENAI_API_KEY','fake')
+    monkeypatch.setenv('DIRECTOR_PLAN_CREDITS','10');monkeypatch.setenv('DIRECTOR_PLANNING_ENABLED','true');monkeypatch.setenv('OPENAI_API_KEY','fake')
     monkeypatch.setenv('DIRECTOR_ALLOWED_USER_IDS',user)
     entered=asyncio.Event();release=asyncio.Event()
     async def model(_):
@@ -67,7 +69,7 @@ async def test_concurrent_duplicate_calls_model_once(director_db,monkeypatch):
 @pytest.mark.asyncio
 async def test_failures_count_toward_daily_account_cap(director_db,monkeypatch):
     user,_=director_db
-    monkeypatch.setenv('DIRECTOR_PLANNING_ENABLED','true');monkeypatch.setenv('OPENAI_API_KEY','fake')
+    monkeypatch.setenv('DIRECTOR_PLAN_CREDITS','10');monkeypatch.setenv('DIRECTOR_PLANNING_ENABLED','true');monkeypatch.setenv('OPENAI_API_KEY','fake')
     monkeypatch.setenv('DIRECTOR_ALLOWED_USER_IDS',user)
     from fastapi import HTTPException
     provider=AsyncMock(side_effect=HTTPException(504,'Timed out'));monkeypatch.setattr(director,'generate_plan',provider)

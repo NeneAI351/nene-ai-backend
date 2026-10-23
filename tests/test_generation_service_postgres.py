@@ -8,6 +8,7 @@ import pytest_asyncio
 import database
 import generation_service
 import generation_outbox
+from paid_fixtures import fund_paid
 from wallet_store import initialize_wallet_schema
 
 
@@ -20,6 +21,8 @@ async def generation_service_db():
     await database.initialize_schema()
     await initialize_wallet_schema()
     await generation_outbox.initialize_outbox_schema()
+    import payments
+    await payments.initialize_payment_schema()
     yield
 
 
@@ -33,8 +36,9 @@ async def _user_with_credits(credits: str) -> str:
             )
             await conn.execute(
                 "INSERT INTO wallets(user_id,available_credits) VALUES (%s,%s)",
-                (user_id, credits),
+                (user_id, "0"),
             )
+    await fund_paid(user_id,credits)
     return user_id
 
 

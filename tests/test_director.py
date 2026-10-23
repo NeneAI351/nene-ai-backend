@@ -17,6 +17,7 @@ def anyio_backend(): return 'asyncio'
 @pytest.fixture
 def enabled(monkeypatch):
     monkeypatch.setenv('DIRECTOR_PLANNING_ENABLED','true')
+    monkeypatch.setenv('DIRECTOR_PLAN_CREDITS','10')
     monkeypatch.setenv('OPENAI_API_KEY','unit-test-secret')
     monkeypatch.setenv('DIRECTOR_ALLOWED_USER_IDS',USER)
 
