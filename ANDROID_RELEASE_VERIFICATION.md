@@ -7,7 +7,9 @@ Decision: **NO GO for public store release.** This is evidence of an audit, not 
 The isolated verification candidate combines the current main/wallet integration and generation-validation fix with the durable Story, guarded Paystack, and provider-routing branches. Import/router conflicts were resolved by preserving both Story and provider routers. No existing feature branch or production main was modified.
 
 - Backend local command: `PYTHONPATH=../test-deps:. python -m pytest -q`
-- Latest combined local result: **173 passed, 29 skipped**. The skipped tests require PostgreSQL. This includes two further readiness regressions added after live probes found staging reported ready despite missing dependencies. A separate combined-release workflow uses disposable PostgreSQL; only a completed run can establish its result.
+- Latest local result: **173 passed, 29 skipped** (PostgreSQL unavailable locally).
+- **Verified PostgreSQL CI: 202 passed, zero skipped**, at code commit `1e88c3155894a4fa7fda2b60c6eed67773d39d15`, run https://github.com/NeneAI351/nene-ai-backend/actions/runs/39935053630 . This includes staging-readiness regression checks. CI uses a disposable database, fake provider responses and no real payments; it is not a live provider/storage/Android test.
+- Frontend installation manifest, PNG dimensions and JavaScript checks passed CI at `ef178958c859282aab3493f5c4fc14c430f7e32b`, run https://github.com/NeneAI351/nene-ai-frontend/actions/runs/39935057266 .
 - Routing duration tests now configure an inert test API key explicitly. They never submit provider work.
 - Frontend candidate: Story branch plus current main and the installation manifest fix. JavaScript syntax and corrected manifest JSON validation pass. These are not browser or Android device tests.
 - Backend source compiles; this does not establish external-service connectivity.
@@ -23,7 +25,7 @@ The isolated verification candidate combines the current main/wallet integration
 | Story generation | Owner-scoped persistence and assembly source are integrated. Existing tests cover input/object-key guards, not full database ownership, assembly recovery, or provider generation. | Partial |
 | Playback / downloads | Signed owner-scoped media delivery code and mocked storage tests exist. No final real video was played/downloaded or reopened after worker/backend restart. Source UI uses open-video links; actual Android download behavior remains unverified. | Blocked end to end |
 | Credits | Wallet reservation/capture/release and payment-safety unit coverage exists. Database cases require PostgreSQL CI. No real test checkout/webhook-to-wallet journey verified. | Partial |
-| Database | Source and transactional tests exist. No staging credentials used; local PostgreSQL unavailable. Historical CI does not verify this combined candidate. | Pending exact-candidate CI and staging |
+| Database | All 202 combined tests pass against disposable PostgreSQL on the exact code commit. Live staging explicitly reports no database configured. | CI passed; staging blocked |
 | Private storage | Storage unit tests and staging smoke script exist. No current live private-bucket test was performed. Need signed round-trip, public access denial, owner isolation, expiry, deletion, retention, and restart playback evidence. | Unverified live |
 | Privacy policy / terms | Frontend Privacy Policy and Terms of Service buttons display explicit production placeholder text. No finalized public policy URL, operator contact, actual retention schedule, or processor agreement evidence verified. | Missing |
 | Account deletion | No complete account-deletion UI/API/worker or external request page found. Deleting a Story record is not account/auth/storage deletion. | Missing |
@@ -36,6 +38,8 @@ The isolated verification candidate combines the current main/wallet integration
 Initial requests timed out; follow-up probes succeeded with HTTP 200. Production `/api/health` reported version `0.9.0-postgres-foundation` and `database_configured: false`. Staging `/api/health` reported version `0.13.0-scale-security-foundation`, `database_configured: false`, `auth_configured: false`, `shared_rate_limit_configured: false`, no configured provider and no provider credentials. Staging `/api/ready` reported private storage configured, but all four other dependency checks false. It nevertheless returned `ready: true` because staging bypassed the readiness gate. The candidate fixes this misleading staging status: incomplete staging now returns HTTP 503. This does not configure any missing service or change the deployed service. The initial `/api/readiness` path was incorrect and is not used as readiness evidence.
 
 The public GitHub Pages manifest was directly retrieved and inspected. No signed-in user actions or provider API calls were made. Browser installation failed because downloaded archives were invalid; no browser interaction is claimed. Local PostgreSQL package installation was unavailable; skipped tests are not passes.
+
+Supabase public auth settings and JWKS endpoints both returned HTTP 200. Email sign-in and signup are enabled; email auto-confirm is disabled; one public signing key was returned. No user account was created, no password was submitted, and no verification/reset email was sent. This verifies public auth configuration reachability, not a real sign-in journey.
 
 ## Store-declaration worksheet (must be reconciled with the final binary)
 
