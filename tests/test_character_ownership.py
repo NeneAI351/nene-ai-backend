@@ -67,6 +67,18 @@ async def test_character_crud_is_owner_scoped_and_project_bound(characters_postg
         assert character["user_id"] == user_a
         assert character["project_id"] == project_a
 
+        # A lost response can retry the same UUID without creating another row.
+        repeated = await client_a.post('/api/characters', json={
+            'id':character_id, 'name':'Main hero', 'project_id':project_a,
+            'profile':{'appearance':'blue coat', 'voice':'warm'},
+        })
+        assert repeated.status_code == 201
+        assert repeated.json()['id'] == character_id
+        conflict = await client_a.post('/api/characters', json={
+            'id':character_id, 'name':'Different draft',
+        })
+        assert conflict.status_code == 409
+
         listed = await client_a.get("/api/characters")
         assert [item["id"] for item in listed.json()["items"]] == [character_id]
         by_project = await client_a.get("/api/characters", params={"project_id": project_a})
@@ -80,6 +92,10 @@ async def test_character_crud_is_owner_scoped_and_project_bound(characters_postg
     async with await _client_for(user_b) as client_b:
         project_b = await _create_project(client_b, "B's project")
         assert (await client_b.get("/api/characters")).json()["items"] == []
+        collision = await client_b.post('/api/characters', json={
+            'id':character_id, 'name':'Main hero', 'project_id':None,
+        })
+        assert collision.status_code == 409
         assert (await client_b.get(f"/api/characters/{character_id}")).status_code == 404
         assert (await client_b.patch(f"/api/characters/{character_id}", json={
             "name": "Takeover"
@@ -128,3 +144,4 @@ async def test_character_auth_validation_and_mass_assignment(characters_postgres
             "profile": None
         })).status_code == 422
     app.app.dependency_overrides.clear()
+

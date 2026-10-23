@@ -62,11 +62,22 @@ async def create_character(
             row = await (await conn.execute(
                 f"""INSERT INTO characters (id, user_id, project_id, name, profile)
                     VALUES (%s, %s, %s, %s, %s::jsonb)
+                    ON CONFLICT (id) DO NOTHING
                     RETURNING {CHARACTER_COLUMNS}""",
                 (character_id, user_id, project_id, name,
                  __import__("json").dumps(profile)),
             )).fetchone()
-            return row
+            if row is not None:
+                return row
+            existing = await (await conn.execute(
+                f"SELECT {CHARACTER_COLUMNS} FROM characters WHERE id=%s AND user_id=%s",
+                (character_id, user_id),
+            )).fetchone()
+            if (existing is not None and existing["name"] == name
+                and existing["profile"] == profile
+                and str(existing["project_id"] or "") == str(project_id or "")):
+                return existing
+            raise ValueError("Character save ID conflict")
 
 
 async def update_character(
@@ -118,3 +129,4 @@ async def delete_character(user_id: str, character_id: str) -> bool:
         (character_id, user_id),
     )
     return row is not None
+
