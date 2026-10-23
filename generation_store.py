@@ -285,9 +285,9 @@ async def transition_generation(
     error: dict[str, Any] | None = None,
 ) -> None:
     """Enforce valid owner-scoped lifecycle transitions under a row lock."""
-    pool = _require_pool()
     if new_status not in SAFE_STATUSES:
         raise GenerationConflict("Unknown generation status.")
+    pool = _require_pool()
     try:
         owner_uuid = str(uuid.UUID(user_id))
         generation_uuid = str(uuid.UUID(generation_id))

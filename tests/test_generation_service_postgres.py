@@ -1,4 +1,5 @@
 """PostgreSQL integration tests for atomic generation pricing/reservation/queue creation."""
+import os
 import uuid
 
 import pytest
@@ -12,6 +13,8 @@ from wallet_store import initialize_wallet_schema
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def generation_service_db():
+    if not os.getenv("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is required for generation service integration tests.")
     if database._pool is None:
         await database.start_database()
     await database.initialize_schema()
