@@ -21,14 +21,18 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from database import (database_configured, start_database, close_database, initialize_schema, get_idempotency as db_get_idempotency, create_idempotency as db_create_idempotency, complete_idempotency as db_complete_idempotency, delete_idempotency as db_delete_idempotency)
-from pricing import quote as pricing_quote, catalog as pricing_catalog
+from pricing import quote as pricing_quote, catalog as pricing_catalog, package_economics, video_capacity
 from wallet import router as wallet_router
+from payments import router as payments_router, initialize_payment_schema
 from wallet_store import initialize_wallet_schema
 from rate_limits import enforce_rate_limit, close_rate_limit_client
 from auth import get_authenticated_user_id
 from readiness import router as readiness_router
 from projects import router as projects_router
 from characters import router as characters_router
+from stories import router as stories_router
+import story_store
+from provider_routes import router as provider_router
 import database
 import generation_store
 import generation_service
@@ -89,9 +93,12 @@ async def security_response_headers(request: Request, call_next):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     return response
 app.include_router(wallet_router)
+app.include_router(payments_router)
 app.include_router(readiness_router)
 app.include_router(projects_router)
 app.include_router(characters_router)
+app.include_router(stories_router)
+app.include_router(provider_router)
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
 PIXAZO_API_KEY = os.getenv("PIXAZO_API_KEY", "").strip()
@@ -116,7 +123,9 @@ async def _startup_database():
         await start_database()
         await initialize_schema()
         await initialize_wallet_schema()
+        await initialize_payment_schema()
         await initialize_outbox_schema()
+        await story_store.initialize_story_schema()
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
@@ -207,6 +216,18 @@ def provider_info():
 def pricing_catalog_endpoint():
     """Return the current internal provider rate card and margin assumptions."""
     return {"ok": True, **pricing_catalog()}
+
+
+@app.get("/api/pricing/packages")
+def pricing_package_economics_endpoint():
+    """Return planning economics for the server-owned credit packages."""
+    return {"ok": True, **package_economics()}
+
+
+@app.get("/api/pricing/capacity")
+def pricing_video_capacity_endpoint():
+    """Return calculated credit charges and maximum video counts per package."""
+    return {"ok": True, **video_capacity()}
 
 
 class PricingQuoteRequest(BaseModel):
@@ -889,6 +910,13 @@ async def create_generation_endpoint(
         raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
     if req.type not in {"text-to-video", "image-to-video"}:
         raise HTTPException(status_code=400, detail="Unsupported generation type.")
+    # Fail closed before wallet reservation when the only durable worker adapter
+    # is not configured. A queued job without a provider credential can strand
+    # reserved credits and must never be accepted.
+    if (req.provider or "").strip().lower() != "ltx":
+        raise HTTPException(status_code=400, detail="The durable generation worker currently supports LTX only.")
+    if not os.getenv("LTX_API_KEY", "").strip():
+        raise HTTPException(status_code=503, detail="LTX durable generation is not configured; no credits were reserved.")
     if req.type == "image-to-video":
         if _is_production_environment():
             if not req.source_image_id or req.image_url:
