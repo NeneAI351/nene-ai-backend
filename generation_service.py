@@ -62,6 +62,7 @@ async def create_reserved_generation(
     source_audio_id: str | None = None,
     credit_limit: Decimal | None = None,
     generate_audio: bool = True,
+    tts_voice: str | None = None,
 ) -> dict[str, Any]:
     """Create one billable generation in one PostgreSQL transaction.
 
@@ -85,29 +86,39 @@ async def create_reserved_generation(
     prompt = (prompt or "").strip()
     if not prompt or len(prompt) > 12000:
         raise ValueError("Prompt must contain between 1 and 12000 characters.")
-    if provider != "ltx":
-        raise ValueError("The durable worker currently supports the LTX provider only. Other providers remain disabled in this flow.")
-    if (generation_type != "audio-to-video" and duration_seconds not in {6, 8, 10}) or (generation_type == "audio-to-video" and not 2 <= duration_seconds <= 10):
-        raise ValueError("Duration must be one of the supported billable durations: 6, 8, or 10 seconds.")
-    if generation_type not in {"text-to-video", "image-to-video", "audio-to-video"}:
-        raise ValueError("Unsupported generation type.")
-    if generation_type == "image-to-video" and not (source_image_id or image_url):
-        raise ValueError("Image-to-video requires a private source image asset.")
-    audio_asset = _uuid(source_audio_id, "source audio identifier") if source_audio_id else None
-    if generation_type == "audio-to-video":
-        if not audio_asset or not source_image_id or image_url or not generate_audio:
-            raise ValueError("Talking characters require private audio and portrait asset IDs with sound enabled.")
-        if model != "ltx-2-5-fast" or resolution not in {"720p","1080p"} or aspect_ratio not in {None,"16:9","9:16","1:1"}:
-            raise ValueError("Unsupported talking-character output settings.")
-    elif audio_asset:
-        raise ValueError("Uploaded speech requires audio-to-video mode.")
-    source_asset = _uuid(source_image_id, "source image identifier") if source_image_id else None
-    if aspect_ratio and aspect_ratio not in {"16:9", "9:16", "1:1", "21:9", "4:3", "3:4", "3:2", "2:3", "4:5"}:
-        raise ValueError("Unsupported aspect ratio.")
+    is_tts = generation_type == "text-to-speech"
+    if is_tts:
+        if not generate_audio or provider!="magic-hour" or model!="magic-hour-voice" or resolution!="audio" or duration_seconds!=1 or source_audio_id or source_image_id or image_url or aspect_ratio:
+            raise ValueError("Invalid speech generation settings.")
+        from speech_synthesis import quote as speech_quote
+        quote=speech_quote(prompt,tts_voice)
+        source_asset=None
+        audio_asset=None
+    else:
+        if provider != "ltx":
+            raise ValueError("The durable worker currently supports the LTX provider only. Other providers remain disabled in this flow.")
+        if (generation_type != "audio-to-video" and duration_seconds not in {6, 8, 10}) or (generation_type == "audio-to-video" and not 2 <= duration_seconds <= 10):
+            raise ValueError("Duration must be one of the supported billable durations: 6, 8, or 10 seconds.")
+        if generation_type not in {"text-to-video", "image-to-video", "audio-to-video"}:
+            raise ValueError("Unsupported generation type.")
+        if generation_type == "image-to-video" and not (source_image_id or image_url):
+            raise ValueError("Image-to-video requires a private source image asset.")
+        audio_asset = _uuid(source_audio_id, "source audio identifier") if source_audio_id else None
+        if generation_type == "audio-to-video":
+            if not audio_asset or not source_image_id or image_url or not generate_audio:
+                raise ValueError("Talking characters require private audio and portrait asset IDs with sound enabled.")
+            if model != "ltx-2-5-fast" or resolution not in {"720p","1080p"} or aspect_ratio not in {None,"16:9","9:16","1:1"}:
+                raise ValueError("Unsupported talking-character output settings.")
+        elif audio_asset:
+            raise ValueError("Uploaded speech requires audio-to-video mode.")
+        source_asset = _uuid(source_image_id, "source image identifier") if source_image_id else None
+        if aspect_ratio and aspect_ratio not in {"16:9", "9:16", "1:1", "21:9", "4:3", "3:4", "3:2", "2:3", "4:5"}:
+            raise ValueError("Unsupported aspect ratio.")
 
     # These are the exact parameters to be used by the worker. Never quote one
     # resolution/duration and silently submit a different one.
-    quote = pricing_quote(provider, model, resolution, duration_seconds)
+    if not is_tts:
+        quote = pricing_quote(provider, model, resolution, duration_seconds)
     normalized = {
         "type": generation_type,
         "prompt": prompt,
@@ -118,6 +129,8 @@ async def create_reserved_generation(
         "aspect_ratio": aspect_ratio,
         "source_image_id": source_asset,
     }
+    if is_tts:
+        normalized["tts_voice"] = tts_voice
     if audio_asset:
         normalized["source_audio_id"] = audio_asset
     if image_url and not source_asset:
