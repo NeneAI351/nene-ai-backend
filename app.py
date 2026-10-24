@@ -757,6 +757,7 @@ def generation_availability():
     enabled = os.getenv("NENE_DURABLE_GENERATION_CREATE_ENABLED", "").strip().lower() == "true"
     accepting = enabled and all(checks.values())
     return {"accepting_requests": accepting, "configuration_only": True,
+            "generate_audio_supported": True,
             "paid_credits_required": True,
             "message": "Paid video submissions are enabled." if accepting else
             "Paid video generation is not enabled yet. No credits have been charged."}
@@ -773,6 +774,7 @@ class CreateGenerationRequest(BaseModel):
     aspect_ratio: Optional[str] = None
     image_url: Optional[str] = None
     source_image_id: Optional[str] = None
+    generate_audio: bool = Field(default=True, strict=True)
     credit_limit: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)
 
 
@@ -827,6 +829,7 @@ async def create_generation_endpoint(
             aspect_ratio=req.aspect_ratio,
             image_url=req.image_url,
             source_image_id=req.source_image_id,
+            generate_audio=req.generate_audio,
             credit_limit=req.credit_limit,
         )
         return result
@@ -1021,4 +1024,5 @@ async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
         return data
 
     raise HTTPException(status_code=400, detail="Unknown provider. Use pixazo, magic-hour, or ltx.")
+
 
