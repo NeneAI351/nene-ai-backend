@@ -763,6 +763,7 @@ def generation_availability():
             "generate_audio_supported": True,
             "story_audio_supported": True,
             "talking_character_supported": True,
+            "speech_uploads_supported": bool(speech_assets.ffmpeg_executable()),
             "paid_credits_required": True,
             "message": "Paid video submissions are enabled." if accepting else
             "Paid video generation is not enabled yet. No credits have been charged."}

@@ -76,3 +76,14 @@ async def test_talking_audio_crosses_authenticated_generation_boundary(monkeypat
     assert response.status_code==202
     assert create.call_args.args[0]==OWNER
     assert create.call_args.kwargs['source_audio_id']==ASSET
+
+def test_audio_normalization_works_without_system_ffmpeg(monkeypatch):
+    pytest.importorskip('imageio_ffmpeg')
+    speech_assets.ffmpeg_executable.cache_clear()
+    monkeypatch.setattr(speech_assets.shutil,'which',lambda name:None)
+    try:
+        executable=speech_assets.ffmpeg_executable()
+        assert executable and executable!='ffmpeg'
+        _,duration,billable=speech_assets.normalize(wav(2.2))
+        assert duration==2.2 and billable==3
+    finally:speech_assets.ffmpeg_executable.cache_clear()

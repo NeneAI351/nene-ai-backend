@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio,base64,math,shutil,subprocess,tempfile,uuid,wave
 from pathlib import Path
+from functools import lru_cache
 from fastapi import APIRouter,Depends,HTTPException,Request
 from pydantic import BaseModel,ConfigDict,Field
 import database,media_storage
@@ -10,6 +11,16 @@ from rate_limits import enforce_rate_limit
 
 router=APIRouter(prefix='/api/speech-assets',tags=['speech'])
 MAX_BYTES=8*1024*1024
+
+@lru_cache(maxsize=1)
+def ffmpeg_executable():
+    system=shutil.which('ffmpeg')
+    if system:return system
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except (ImportError,RuntimeError):return None
+
 
 async def initialize_schema():
     if database._pool is None:return
@@ -30,7 +41,7 @@ def normalize(raw:bytes)->tuple[bytes,float,int]:
     if not valid:raise ValueError('Choose a WAV, MP3, M4A or OGG recording.')
     with tempfile.TemporaryDirectory(prefix='nene-speech-') as temp:
         source=Path(temp)/'source';output=Path(temp)/'speech.wav';source.write_bytes(raw)
-        subprocess.run(['ffmpeg','-nostdin','-v','error','-protocol_whitelist','file,pipe','-i',str(source),'-map','0:a:0','-vn','-t','10.1','-ac','1','-ar','48000','-c:a','pcm_s16le',str(output)],check=True,capture_output=True,timeout=20)
+        subprocess.run([ffmpeg_executable() or 'ffmpeg','-nostdin','-v','error','-protocol_whitelist','file,pipe','-i',str(source),'-map','0:a:0','-vn','-t','10.1','-ac','1','-ar','48000','-c:a','pcm_s16le',str(output)],check=True,capture_output=True,timeout=20)
         with wave.open(str(output)) as audio:duration=audio.getnframes()/audio.getframerate()
         if not 2<=duration<=10:raise ValueError('Use a recording between 2 and 10 seconds. Longer recordings must be split into scenes.')
         return output.read_bytes(),round(duration,4),math.ceil(duration)
@@ -46,7 +57,7 @@ def signed_url(key):
 @router.post('',status_code=201)
 async def upload(body:SpeechUpload,request:Request,owner:str=Depends(get_authenticated_user_id)):
     await enforce_rate_limit(request,bucket='speech-upload',limit=6,window_seconds=60)
-    if not database.database_configured() or not shutil.which('ffmpeg'):raise HTTPException(503,'Speech uploads are temporarily unavailable.')
+    if not database.database_configured() or not ffmpeg_executable():raise HTTPException(503,'Speech uploads are temporarily unavailable.')
     try:
         header,encoded=body.data_uri.split(',',1)
         if not header.startswith('data:audio/') or not header.endswith(';base64') or len(encoded)>((MAX_BYTES+2)//3)*4:raise ValueError('Invalid or oversized audio recording.')
