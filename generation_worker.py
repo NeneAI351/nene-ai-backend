@@ -121,6 +121,10 @@ async def _dispatch(generation: dict[str, Any]) -> None:
         if status in {"submitted", "running", "submission_unknown"}:
             return
         raise RuntimeError("generation_state_not_dispatchable")
+    if generation["provider"] == "magic-hour" and generation["generation_type"] == "text-to-speech":
+        import speech_synthesis
+        await speech_synthesis.dispatch(generation)
+        return
     if generation["provider"] != "ltx":
         raise RuntimeError("provider_adapter_not_enabled")
     base, headers = _provider_config()
@@ -278,6 +282,9 @@ async def _reconcile(generation: dict[str, Any]) -> int:
             raise RuntimeError("missing_provider_job_requires_reconciliation")
         logger.error("Generation %s has ambiguous submission without provider job ID; not resubmitting.", generation_id)
         return 300
+    if generation["provider"] == "magic-hour" and generation["generation_type"] == "text-to-speech":
+        import speech_synthesis
+        return await speech_synthesis.reconcile(generation)
     if generation["provider"] != "ltx":
         raise RuntimeError("provider_adapter_not_enabled")
 
@@ -401,6 +408,7 @@ async def run_worker() -> None:
     from wallet_store import initialize_wallet_schema
     await initialize_wallet_schema()
     await generation_outbox.initialize_outbox_schema()
+    await speech_assets.initialize_schema()
     worker_id = f"{socket.gethostname()}-{uuid.uuid4()}"
     logger.info("Generation worker started with id %s", worker_id)
     try:

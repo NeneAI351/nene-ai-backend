@@ -37,6 +37,7 @@ from characters import router as characters_router
 from stories import router as stories_router
 import story_store
 import speech_assets
+import speech_synthesis
 from director import router as director_router, initialize_director_schema
 from provider_routes import router as provider_router
 import database
@@ -106,6 +107,7 @@ app.include_router(account_profile_router)
 app.include_router(payments_router)
 app.include_router(readiness_router)
 app.include_router(speech_assets.router)
+app.include_router(speech_synthesis.router)
 app.include_router(projects_router)
 app.include_router(characters_router)
 app.include_router(stories_router)
