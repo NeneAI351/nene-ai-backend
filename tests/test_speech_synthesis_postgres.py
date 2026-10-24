@@ -41,7 +41,7 @@ async def test_complete_voice_is_stored_privately_previewed_and_charged_once(voi
     import io,wave,httpx
     from unittest.mock import AsyncMock
     import speech_synthesis as speech,media_storage,provider_costs
-    from generation_worker import _load_generation
+    from generation_worker import _load_generation,_reconcile
     if not speech_assets.ffmpeg_executable():pytest.skip('Audio decoder required')
     monkeypatch.setenv('NENE_MAGIC_HOUR_CREDIT_USD','0.0025')
     monkeypatch.setenv('MAGIC_HOUR_API_KEY','disposable-test-key')
@@ -67,7 +67,7 @@ async def test_complete_voice_is_stored_privately_previewed_and_charged_once(voi
     download=AsyncMock(return_value=raw.getvalue());monkeypatch.setattr(speech,'download_audio',download)
     monkeypatch.setattr(media_storage,'_client',lambda:PrivateStorage());monkeypatch.setattr(media_storage,'_storage_config',lambda:{'bucket':'disposable-private-voice'})
     row=await _load_generation(job)
-    await speech.reconcile(row);await speech.reconcile(row)
+    await _reconcile(row);await _reconcile(await _load_generation(job))
     assert len(fetched)==1 and len(stored)==1 and download.await_count==1
     assert stored[0]['Key']==f'source-speech/{owner}/{job}.wav' and stored[0]['CacheControl']=='private, no-store'
     asset=await database.fetch_one('SELECT duration_seconds,billable_seconds FROM speech_assets WHERE id=%s AND user_id=%s',(job,owner))
