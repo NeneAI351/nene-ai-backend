@@ -239,6 +239,7 @@ async def process_deletion(job):
                         SELECT reference,provider,mode,amount_kobo,currency,status,provider_transaction_id,created_at,paid_at
                         FROM payment_orders WHERE user_id=%s ON CONFLICT(reference) DO NOTHING''',(owner,))
                     await conn.execute('DELETE FROM provider_costs WHERE generation_id IN (SELECT id FROM generations WHERE user_id=%s)',(owner,))
+                    await conn.execute('DELETE FROM generation_idempotency WHERE generation_id IN (SELECT id FROM generations WHERE user_id=%s)',(owner,))
                     # generations.user_id is SET NULL, so explicitly erase it,
                     # including prompts/results, before deleting the user row.
                     await conn.execute('DELETE FROM generations WHERE user_id=%s',(owner,))
