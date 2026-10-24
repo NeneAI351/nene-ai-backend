@@ -1,0 +1,48 @@
+name: Combined release verification
+
+on:
+  pull_request:
+  push:
+    branches: ["verify/android-readiness-20261023"]
+
+jobs:
+  backend-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nene
+          POSTGRES_PASSWORD: verification_only
+          POSTGRES_DB: nene_verification
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U nene -d nene_verification"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://nene:verification_only@localhost:5432/nene_verification
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pytest pytest-asyncio
+      - name: Install Story audio verification tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg
+      - name: Compile all backend and test modules
+        run: python -m compileall -q .
+      - name: Verify combined backend against disposable PostgreSQL
+        run: >-
+          python -m pytest -q
+          -o asyncio_default_fixture_loop_scope=session
+          -o asyncio_default_test_loop_scope=session
+          --junitxml=release-verification.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: backend-release-test-results
+          path: release-verification.xml
+
