@@ -12,7 +12,7 @@ from typing import Any
 PROVIDERS: dict[str, dict[str, Any]] = {
     "ltx": {
         "label": "LTX",
-        "generation_types": ["text-to-video", "image-to-video"],
+        "generation_types": ["text-to-video", "image-to-video", "audio-to-video"],
         "adapter_enabled": True,
         "required_env": ["LTX_API_KEY"],
         "strengths": ["fast iteration", "text-to-video", "image-to-video"],
@@ -77,9 +77,9 @@ def select_provider(
     adding provider names to the UI must never imply their adapters work.
     """
     requested = _key(mode)
-    if generation_type not in {"text-to-video", "image-to-video"}:
+    if generation_type not in {"text-to-video", "image-to-video", "audio-to-video"}:
         raise ValueError("Unsupported generation type.")
-    if duration_seconds not in {6, 8, 10}:
+    if (generation_type != "audio-to-video" and duration_seconds not in {6, 8, 10}) or (generation_type == "audio-to-video" and not 2 <= duration_seconds <= 10):
         raise ValueError("Duration must be one of 6, 8, or 10 seconds.")
     if requested != "auto" and requested not in PROVIDERS:
         raise ValueError("Choose Auto, Magic Hour, Pixazo, or LTX.")

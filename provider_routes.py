@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/providers", tags=["providers"])
 
 class ProviderSelectionRequest(BaseModel):
     mode: str = Field(default="auto", max_length=40)
-    generation_type: Literal["text-to-video", "image-to-video"] = "text-to-video"
+    generation_type: Literal["text-to-video", "image-to-video", "audio-to-video"] = "text-to-video"
     resolution: str = Field(default="720p", max_length=12)
     duration_seconds: int = Field(default=6, ge=1, le=20)
     max_credits: int | None = Field(default=None, ge=1)
