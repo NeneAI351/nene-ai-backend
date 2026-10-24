@@ -79,3 +79,12 @@ async def test_voice_create_fails_closed_without_paid_launch(monkeypatch):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
         response=await client.post('/api/speech/generations',headers={'Idempotency-Key':'one'},json={'text':'Hello','voice':'Anne Hathaway','credit_limit':'5'})
     assert response.status_code==503 and create.await_count==0
+
+def test_speech_availability_discloses_launch_lock_and_separate_video_cost(monkeypatch):
+    monkeypatch.setattr(speech,'available',lambda:False)
+    state=speech.availability()
+    assert state['accepting_requests'] is False and state['configuration_only'] is True
+    assert state['paid_credits_required'] is True and state['video_included'] is False
+    assert 'not enabled' in state['message'] and 'no credits' in state['message']
+    monkeypatch.setattr(speech,'available',lambda:True)
+    assert 'charged separately' in speech.availability()['message']

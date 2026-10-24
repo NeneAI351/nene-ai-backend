@@ -51,8 +51,11 @@ class Submit(Script):
 
 @router.get('/availability')
 def availability():
-    return {'accepting_requests':available(),'voices':list(VOICES),'max_characters':120,'ai_generated':True,
-      'message':'Create a voice track first. Listen and approve it, then review a separate video price.'}
+    enabled=available()
+    return {'accepting_requests':enabled,'configuration_only':True,'voices':list(VOICES),'max_characters':120,'ai_generated':True,
+      'paid_credits_required':True,'video_included':False,
+      'message':'Write a short script and review the voice price. Listen and download your track; character animation is optional and charged separately.' if enabled else
+      'Voice generation is not enabled yet. You can prepare a script, but no voice will be submitted and no credits will be charged.'}
 
 @router.post('/quote')
 async def preview(body:Script,owner:str=Depends(get_authenticated_user_id)):
