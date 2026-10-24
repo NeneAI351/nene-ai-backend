@@ -47,6 +47,8 @@ async def initialize_story_schema() -> None:
               created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
               UNIQUE(story_id, scene_index)
             )""")
+            await conn.execute("ALTER TABLE story_scenes ADD COLUMN IF NOT EXISTS generate_audio BOOLEAN NOT NULL DEFAULT TRUE")
+            await conn.execute("ALTER TABLE story_scenes ADD COLUMN IF NOT EXISTS sound_direction TEXT NOT NULL DEFAULT ''")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_scenes_owner_story ON story_scenes(user_id, story_id, scene_index)")
             await conn.execute("""
             CREATE TABLE IF NOT EXISTS story_assembly_jobs (
@@ -94,7 +96,7 @@ async def get_story(user_id: str, story_id: str) -> dict[str,Any]|None:
       FROM story_projects WHERE id=%s AND user_id=%s""",(story_id,user_id))
     if not story:
         return None
-    story["scenes"] = await database.fetch_all("""SELECT s.id::text,s.scene_index,s.prompt,s.duration_seconds,
+    story["scenes"] = await database.fetch_all("""SELECT s.id::text,s.scene_index,s.prompt,s.duration_seconds,s.generate_audio,s.sound_direction,
       CASE WHEN g.status='succeeded' THEN 'succeeded'
            WHEN g.status='failed' THEN 'failed'
            WHEN g.status IN ('submitting','submitted','running','submission_unknown') THEN 'generating'
@@ -111,27 +113,35 @@ async def get_story(user_id: str, story_id: str) -> dict[str,Any]|None:
 async def save_scenes(user_id: str, story_id: str, scenes: list[dict[str,Any]]) -> dict[str,Any]|None:
     async with database._pool.connection() as conn:
         async with conn.transaction():
-            story = await (await conn.execute("SELECT id FROM story_projects WHERE id=%s AND user_id=%s FOR UPDATE",(story_id,user_id))).fetchone()
+            story = await (await conn.execute("SELECT id,status FROM story_projects WHERE id=%s AND user_id=%s FOR UPDATE",(story_id,user_id))).fetchone()
             if not story:
                 return None
+            if story.get("status") != "draft":
+                raise ValueError("Scenes cannot be edited after generation starts. Create a new story plan.")
             for scene in scenes:
                 scene_id = str(uuid.uuid4())
                 await conn.execute("""INSERT INTO story_scenes
-                    (id,story_id,user_id,scene_index,prompt,duration_seconds)
-                    VALUES (%s,%s,%s,%s,%s,%s)
+                    (id,story_id,user_id,scene_index,prompt,duration_seconds,generate_audio,sound_direction)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT(story_id,scene_index) DO UPDATE SET
-                      prompt=EXCLUDED.prompt,duration_seconds=EXCLUDED.duration_seconds,
+                      prompt=EXCLUDED.prompt,duration_seconds=EXCLUDED.duration_seconds,generate_audio=EXCLUDED.generate_audio,sound_direction=EXCLUDED.sound_direction,
                       status=CASE WHEN story_scenes.prompt=EXCLUDED.prompt
                         AND story_scenes.duration_seconds=EXCLUDED.duration_seconds
+                        AND story_scenes.generate_audio=EXCLUDED.generate_audio
+                        AND story_scenes.sound_direction=EXCLUDED.sound_direction
                         THEN story_scenes.status ELSE 'planned' END,
                       generation_id=CASE WHEN story_scenes.prompt=EXCLUDED.prompt
                         AND story_scenes.duration_seconds=EXCLUDED.duration_seconds
+                        AND story_scenes.generate_audio=EXCLUDED.generate_audio
+                        AND story_scenes.sound_direction=EXCLUDED.sound_direction
                         THEN story_scenes.generation_id ELSE NULL END,
                       result_object_key=CASE WHEN story_scenes.prompt=EXCLUDED.prompt
                         AND story_scenes.duration_seconds=EXCLUDED.duration_seconds
+                        AND story_scenes.generate_audio=EXCLUDED.generate_audio
+                        AND story_scenes.sound_direction=EXCLUDED.sound_direction
                         THEN story_scenes.result_object_key ELSE NULL END,
                       error_code=NULL,updated_at=NOW()""",
-                    (scene_id,story_id,user_id,scene["scene_index"],scene["prompt"],scene["duration_seconds"]))
+                    (scene_id,story_id,user_id,scene["scene_index"],scene["prompt"],scene["duration_seconds"],scene.get("generate_audio",True),scene.get("sound_direction","")))
             await conn.execute("DELETE FROM story_scenes WHERE story_id=%s AND user_id=%s AND scene_index >= %s",
                                (story_id,user_id,len(scenes)))
             await conn.execute("UPDATE story_projects SET updated_at=NOW() WHERE id=%s AND user_id=%s",(story_id,user_id))
@@ -205,3 +215,4 @@ async def get_assembly_job(user_id: str, story_id: str) -> dict[str,Any]|None:
     return await database.fetch_one("""SELECT id::text,status,output_object_key,error_code,created_at,updated_at
       FROM story_assembly_jobs WHERE story_id=%s AND user_id=%s
       ORDER BY created_at DESC LIMIT 1""",(story_id,user_id))
+

@@ -24,6 +24,8 @@ class SceneInput(BaseModel):
     scene_index: int = Field(ge=0,lt=50)
     prompt: str = Field(min_length=1,max_length=12000)
     duration_seconds: int = Field(default=6)
+    generate_audio: bool = Field(default=True, strict=True)
+    sound_direction: str = Field(default="", max_length=500)
 
     @field_validator("duration_seconds")
     @classmethod
@@ -88,6 +90,7 @@ async def save_scenes(story_id: uuid.UUID,body: ScenesSave,user_id: str=Depends(
         raise HTTPException(status_code=422,detail="Scene duration must be 6, 8, or 10 seconds.")
     scenes.sort(key=lambda s:s["scene_index"])
     try: story=await story_store.save_scenes(user_id,str(story_id),scenes)
+    except ValueError as exc: raise HTTPException(status_code=409,detail=str(exc))
     except RuntimeError: raise _unavailable()
     if story is None: raise HTTPException(status_code=404,detail="Story not found.")
     return story
@@ -153,3 +156,4 @@ async def story_video_playback(story_id: uuid.UUID,user_id: str=Depends(get_auth
     except (ValueError,RuntimeError):
         raise HTTPException(status_code=503,detail="Private video playback URL could not be created.")
     return {"video_url":url,"expires_in":media_storage.SIGNED_URL_TTL_SECONDS,"content_type":"video/mp4"}
+
