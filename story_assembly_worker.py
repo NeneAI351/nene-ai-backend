@@ -60,7 +60,7 @@ def _normalize_scene(source: Path, target: Path, preserve_audio: bool = True) ->
     if not math.isfinite(duration) or not math.isfinite(start) or duration<=0 or duration>120:
         raise ValueError('scene_video_duration_invalid')
     has_audio=preserve_audio and any(stream.get('codec_type')=='audio' for stream in data.get('streams',[]))
-    cmd=['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-i',str(source)]
+    cmd=['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-copyts','-i',str(source)]
     if not has_audio:cmd+=['-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=48000']
     cmd+=['-map','0:v:0','-map','0:a:0' if has_audio else '1:a:0',
           '-vf','setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p',

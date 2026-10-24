@@ -8,18 +8,18 @@ import pytest
 import story_assembly_worker as worker
 from stories import SceneInput
 
-pytestmark=pytest.mark.skipif(not shutil.which('ffmpeg'),reason='FFmpeg not installed')
 
 def run(*args):
     return subprocess.run(args,check=True,capture_output=True).stdout
 
+@pytest.mark.skipif(not shutil.which('ffmpeg'),reason='FFmpeg not installed')
 def test_mixed_sound_and_silent_scene_assembly(tmp_path,monkeypatch):
     sources=[]
     for i,freq in enumerate([440,None,880]):
         path=tmp_path/f'{i}.mp4'
         args=['ffmpeg','-hide_banner','-loglevel','error','-y','-f','lavfi','-i',f'color=c=black:s=160x90:r=24:d=1']
         if freq:args+=['-f','lavfi','-i',f'sine=frequency={freq}:sample_rate=44100:duration={1.6 if i==2 else 0.6}','-c:a','aac']
-        run(*args,'-c:v','libx264','-pix_fmt','yuv420p',str(path))
+        run(*args,*(['-output_ts_offset','2'] if i==0 else []),'-c:v','libx264','-pix_fmt','yuv420p',str(path))
         sources.append(path)
     def download(key,destination):
         shutil.copyfile(sources[int(key)],destination)
