@@ -36,6 +36,7 @@ from projects import router as projects_router
 from characters import router as characters_router
 from stories import router as stories_router
 import story_store
+import speech_assets
 from director import router as director_router, initialize_director_schema
 from provider_routes import router as provider_router
 import database
@@ -104,6 +105,7 @@ app.include_router(account_terms_router)
 app.include_router(account_profile_router)
 app.include_router(payments_router)
 app.include_router(readiness_router)
+app.include_router(speech_assets.router)
 app.include_router(projects_router)
 app.include_router(characters_router)
 app.include_router(stories_router)
@@ -138,6 +140,7 @@ async def _startup_database():
         await initialize_profile_schema()
         await initialize_outbox_schema()
         await story_store.initialize_story_schema()
+        await speech_assets.initialize_schema()
         await initialize_director_schema()
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
@@ -759,6 +762,8 @@ def generation_availability():
     return {"accepting_requests": accepting, "configuration_only": True,
             "generate_audio_supported": True,
             "story_audio_supported": True,
+            "talking_character_supported": True,
+            "speech_uploads_supported": bool(speech_assets.ffmpeg_executable()),
             "paid_credits_required": True,
             "message": "Paid video submissions are enabled." if accepting else
             "Paid video generation is not enabled yet. No credits have been charged."}
@@ -775,6 +780,7 @@ class CreateGenerationRequest(BaseModel):
     aspect_ratio: Optional[str] = None
     image_url: Optional[str] = None
     source_image_id: Optional[str] = None
+    source_audio_id: Optional[str] = None
     generate_audio: bool = Field(default=True, strict=True)
     credit_limit: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)
 
@@ -794,7 +800,7 @@ async def create_generation_endpoint(
     user_id = await get_authenticated_user_id(request)
     if not database_configured():
         raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
-    if req.type not in {"text-to-video", "image-to-video"}:
+    if req.type not in {"text-to-video", "image-to-video", "audio-to-video"}:
         raise HTTPException(status_code=400, detail="Unsupported generation type.")
     # Fail closed before wallet reservation when the only durable worker adapter
     # is not configured. A queued job without a provider credential can strand
@@ -830,6 +836,7 @@ async def create_generation_endpoint(
             aspect_ratio=req.aspect_ratio,
             image_url=req.image_url,
             source_image_id=req.source_image_id,
+            source_audio_id=req.source_audio_id,
             generate_audio=req.generate_audio,
             credit_limit=req.credit_limit,
         )

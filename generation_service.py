@@ -59,6 +59,7 @@ async def create_reserved_generation(
     aspect_ratio: str | None = None,
     image_url: str | None = None,
     source_image_id: str | None = None,
+    source_audio_id: str | None = None,
     credit_limit: Decimal | None = None,
     generate_audio: bool = True,
 ) -> dict[str, Any]:
@@ -86,12 +87,20 @@ async def create_reserved_generation(
         raise ValueError("Prompt must contain between 1 and 12000 characters.")
     if provider != "ltx":
         raise ValueError("The durable worker currently supports the LTX provider only. Other providers remain disabled in this flow.")
-    if duration_seconds not in {6, 8, 10}:
+    if (generation_type != "audio-to-video" and duration_seconds not in {6, 8, 10}) or (generation_type == "audio-to-video" and not 2 <= duration_seconds <= 10):
         raise ValueError("Duration must be one of the supported billable durations: 6, 8, or 10 seconds.")
-    if generation_type not in {"text-to-video", "image-to-video"}:
+    if generation_type not in {"text-to-video", "image-to-video", "audio-to-video"}:
         raise ValueError("Unsupported generation type.")
     if generation_type == "image-to-video" and not (source_image_id or image_url):
         raise ValueError("Image-to-video requires a private source image asset.")
+    audio_asset = _uuid(source_audio_id, "source audio identifier") if source_audio_id else None
+    if generation_type == "audio-to-video":
+        if not audio_asset or not source_image_id or image_url or not generate_audio:
+            raise ValueError("Talking characters require private audio and portrait asset IDs with sound enabled.")
+        if model != "ltx-2-5-fast" or resolution not in {"720p","1080p"} or aspect_ratio not in {None,"16:9","9:16","1:1"}:
+            raise ValueError("Unsupported talking-character output settings.")
+    elif audio_asset:
+        raise ValueError("Uploaded speech requires audio-to-video mode.")
     source_asset = _uuid(source_image_id, "source image identifier") if source_image_id else None
     if aspect_ratio and aspect_ratio not in {"16:9", "9:16", "1:1", "21:9", "4:3", "3:4", "3:2", "2:3", "4:5"}:
         raise ValueError("Unsupported aspect ratio.")
@@ -109,6 +118,8 @@ async def create_reserved_generation(
         "aspect_ratio": aspect_ratio,
         "source_image_id": source_asset,
     }
+    if audio_asset:
+        normalized["source_audio_id"] = audio_asset
     if image_url and not source_asset:
         # Non-production compatibility only. The production HTTP endpoint rejects
         # public source URLs and requires source_image_id.
@@ -169,6 +180,13 @@ async def create_reserved_generation(
             if credit_limit is not None and amount > credit_limit:
                 raise GenerationPriceChanged("The price increased. Review the current price before generating; no credits were reserved.")
 
+            if audio_asset:
+                owned_audio = await (await conn.execute("""SELECT billable_seconds FROM speech_assets
+                    WHERE id=%s AND user_id=%s FOR KEY SHARE""",(audio_asset,owner))).fetchone()
+                if not owned_audio:
+                    raise LookupError("Speech recording not found.")
+                if owned_audio["billable_seconds"] != duration_seconds:
+                    raise ValueError("Review the price for the full recording duration before generating.")
             if source_asset:
                 owned_asset = await (await conn.execute(
                     """SELECT id FROM media_assets

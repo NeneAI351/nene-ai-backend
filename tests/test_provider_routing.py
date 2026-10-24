@@ -51,4 +51,11 @@ def test_duration_is_validated(duration, monkeypatch):
 
 def test_generation_type_is_validated():
     with pytest.raises(ValueError, match="Unsupported generation type"):
-        provider_routing.select_provider(generation_type="audio-to-video")
+        provider_routing.select_provider(generation_type="unsupported-mode")
+
+
+def test_audio_routing_uses_the_durable_adapter(monkeypatch):
+    monkeypatch.setenv("LTX_API_KEY","test-key")
+    result=provider_routing.select_provider(generation_type="audio-to-video",duration_seconds=3)
+    assert result["provider"]=="ltx" and result["generation_type"]=="audio-to-video"
+    with pytest.raises(ValueError):provider_routing.select_provider(generation_type="audio-to-video",duration_seconds=11)

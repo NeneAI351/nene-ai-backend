@@ -24,6 +24,7 @@ import generation_outbox
 import generation_store
 import media_storage
 import provider_costs
+import speech_assets
 from pricing import quote as pricing_quote
 from wallet_store import wallet_capture, wallet_release
 
@@ -127,7 +128,7 @@ async def _dispatch(generation: dict[str, Any]) -> None:
     if isinstance(request, str):
         request = json.loads(request)
     kind = generation["generation_type"]
-    if kind not in {"text-to-video", "image-to-video"}:
+    if kind not in {"text-to-video", "image-to-video", "audio-to-video"}:
         raise RuntimeError("unsupported_generation_type")
 
     payload = {
@@ -139,7 +140,7 @@ async def _dispatch(generation: dict[str, Any]) -> None:
     }
     if request.get("aspect_ratio"):
         payload["aspect_ratio"] = request["aspect_ratio"]
-    if kind == "image-to-video":
+    if kind in {"image-to-video", "audio-to-video"}:
         source_image_id = request.get("source_image_id")
         if source_image_id:
             asset = await database.fetch_one(
@@ -173,6 +174,18 @@ async def _dispatch(generation: dict[str, Any]) -> None:
             if terminal:
                 await _settle_terminal(terminal)
             return
+
+    if kind == "audio-to-video":
+        audio = await database.fetch_one("SELECT object_key FROM speech_assets WHERE id=%s AND user_id=%s",(request.get("source_audio_id"),owner))
+        if not audio:
+            await generation_store.transition_generation(owner,generation_id,"failed",error={"code":"source_audio_not_found"})
+            terminal=await _load_generation(generation_id)
+            if terminal:await _settle_terminal(terminal)
+            return
+        payload["audio_uri"] = await asyncio.to_thread(speech_assets.signed_url,audio["object_key"])
+        ratio=request.get("aspect_ratio") or "16:9"
+        payload["resolution"] = {"720p":{"16:9":"1280x720","9:16":"720x1280","1:1":"720x720"},"1080p":{"16:9":"1920x1080","9:16":"1080x1920","1:1":"1080x1080"}}[request["resolution"]][ratio]
+        for field in ("duration","generate_audio","aspect_ratio"):payload.pop(field,None)
 
     # Validate local/private dependencies and mint any expiring source URL
     # before persisting 'submitting'. Only the provider network call itself is
