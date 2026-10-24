@@ -758,6 +758,7 @@ def generation_availability():
     accepting = enabled and all(checks.values())
     return {"accepting_requests": accepting, "configuration_only": True,
             "generate_audio_supported": True,
+            "story_audio_supported": True,
             "paid_credits_required": True,
             "message": "Paid video submissions are enabled." if accepting else
             "Paid video generation is not enabled yet. No credits have been charged."}
@@ -1024,5 +1025,6 @@ async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
         return data
 
     raise HTTPException(status_code=400, detail="Unknown provider. Use pixazo, magic-hour, or ltx.")
+
 
 

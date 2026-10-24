@@ -5,7 +5,7 @@ configuration as the API. Scene clips must already be completed durable generati
 outputs. Assembly itself does not submit provider jobs or charge credits.
 """
 from __future__ import annotations
-import asyncio, json, logging, os, subprocess, tempfile, uuid
+import asyncio, json, logging, math, os, subprocess, tempfile, uuid
 from pathlib import Path
 from typing import Any
 import database
@@ -45,7 +45,32 @@ def _download_private_object(object_key: str, destination: str) -> int:
         if f.read(64)[4:8]!=b"ftyp": raise ValueError("scene_video_invalid_mp4")
     return total
 
-def _assemble_and_upload(scene_keys: list[str], assembly_id: str) -> dict[str,Any]:
+def _normalize_scene(source: Path, target: Path, preserve_audio: bool = True) -> None:
+    """Give every clip matching video/audio streams without discarding sound.
+
+    Duration follows the video, not a possibly shorter/longer soundtrack. Missing
+    audio gets silence, short audio is padded, and long audio is trimmed.
+    """
+    probe=subprocess.run(['ffprobe','-v','error','-show_streams','-show_format','-of','json',str(source)],check=True,timeout=30,capture_output=True,text=True)
+    data=json.loads(probe.stdout)
+    video=next((stream for stream in data.get('streams',[]) if stream.get('codec_type')=='video'),None)
+    if not video: raise ValueError('scene_video_stream_missing')
+    duration=float(video.get('duration') or data.get('format',{}).get('duration') or 0)
+    start=float(video.get('start_time') or 0)
+    if not math.isfinite(duration) or not math.isfinite(start) or duration<=0 or duration>120:
+        raise ValueError('scene_video_duration_invalid')
+    has_audio=preserve_audio and any(stream.get('codec_type')=='audio' for stream in data.get('streams',[]))
+    cmd=['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-i',str(source)]
+    if not has_audio:cmd+=['-f','lavfi','-i','anullsrc=channel_layout=stereo:sample_rate=48000']
+    cmd+=['-map','0:v:0','-map','0:a:0' if has_audio else '1:a:0',
+          '-vf','setpts=PTS-STARTPTS,scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p',
+          '-af',f'asetpts=PTS-({start if has_audio else 0})/TB,aresample=48000:async=1:first_pts=0,apad',
+          '-c:v','libx264','-preset','veryfast','-c:a','aac','-ar','48000','-ac','2',
+          '-t',str(duration),'-movflags','+faststart',str(target)]
+    subprocess.run(cmd,check=True,timeout=MAX_ASSEMBLY_SECONDS,capture_output=True)
+    if not target.exists() or target.stat().st_size<12:raise RuntimeError('scene_normalization_failed')
+
+def _assemble_and_upload(scene_keys: list[str], assembly_id: str, audio_flags: list[bool]|None = None) -> dict[str,Any]:
     if not scene_keys or len(scene_keys)>MAX_SCENES: raise ValueError("invalid_scene_count")
     with tempfile.TemporaryDirectory(prefix="nene-story-assembly-") as temp:
         root=Path(temp)
@@ -55,18 +80,12 @@ def _assemble_and_upload(scene_keys: list[str], assembly_id: str) -> dict[str,An
             total+=_download_private_object(key,str(target))
             if total>MAX_TOTAL_BYTES: raise ValueError("story_sources_too_large")
             local.append(target)
-        # Normalize clips to a common H.264/AAC-free MP4 format, then concat
-        # sequentially. No remote URLs are passed to FFmpeg.
+        # Normalize to H.264/AAC with matching stereo audio streams. No remote
+        # URLs are passed to FFmpeg; source order stays exactly as persisted.
         normalized=[]
         for index,source in enumerate(local):
             target=root/f"normalized-{index:03d}.mp4"
-            cmd=["ffmpeg","-nostdin","-hide_banner","-loglevel","error","-y",
-                 "-i",str(source),"-map","0:v:0","-an","-vf",
-                 "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p",
-                 "-c:v","libx264","-preset","veryfast","-movflags","+faststart",
-                 "-t", "120",str(target)]
-            subprocess.run(cmd,check=True,timeout=MAX_ASSEMBLY_SECONDS,capture_output=True)
-            if not target.exists() or target.stat().st_size<12: raise RuntimeError("scene_normalization_failed")
+            _normalize_scene(source,target, audio_flags[index] if audio_flags is not None else True)
             normalized.append(target)
         concat_file=root/"concat.txt"
         # All paths are generated local paths without apostrophes.
@@ -116,7 +135,7 @@ async def _process(job: dict[str,Any]) -> None:
     heartbeat=asyncio.create_task(_heartbeat(job_id,user_id,worker_id,stop_heartbeat))
     try:
         # Lock the story and verify every scene has a durable private MP4 result.
-        rows=await database.fetch_all("""SELECT s.scene_index,COALESCE(s.result_object_key,g.result->>'object_key') AS object_key,
+        rows=await database.fetch_all("""SELECT s.scene_index,s.generate_audio,COALESCE(s.result_object_key,g.result->>'object_key') AS object_key,
           g.status AS generation_status
           FROM story_scenes s LEFT JOIN generations g ON g.id=s.generation_id AND g.user_id=s.user_id
           WHERE s.story_id=%s AND s.user_id=%s ORDER BY s.scene_index""",(story_id,user_id))
@@ -125,7 +144,7 @@ async def _process(job: dict[str,Any]) -> None:
             raise ValueError("story_scenes_not_all_succeeded")
         if [r["scene_index"] for r in rows]!=list(range(len(rows))):
             raise ValueError("story_scene_order_incomplete")
-        stored=await asyncio.to_thread(_assemble_and_upload,[r["object_key"] for r in rows],job_id)
+        stored=await asyncio.to_thread(_assemble_and_upload,[r["object_key"] for r in rows],job_id,[r.get("generate_audio",True) for r in rows])
         async with database._pool.connection() as conn:
             async with conn.transaction():
                 # Owner-scoped finalization and job completion commit together.
@@ -174,3 +193,4 @@ async def run_worker() -> None:
 
 if __name__=="__main__":
     asyncio.run(run_worker())
+
