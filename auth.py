@@ -27,7 +27,7 @@ def _jwks_client(url: str) -> PyJWKClient:
 
 
 async def get_verified_user_id(request: Request) -> str:
-    """Validate a signed bearer token, then ensure its user row exists.
+    """Validate a signed bearer token without creating an app account.
 
     The user ID comes only from a cryptographically verified JWT subject. Any
     user_id supplied by a browser, header, query parameter, or body is ignored.
@@ -102,6 +102,12 @@ async def get_authenticated_user_id(request: Request) -> str:
     try:
         async with database._pool.connection() as conn:
             async with conn.transaction():
+                # Fence a delayed sign-in against final account erasure. A token
+                # checked before deletion must never recreate a row afterwards.
+                await conn.execute(
+                    "SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))",
+                    ('account-lifecycle:' + user_id,),
+                )
                 blocked = await (await conn.execute(
                     "SELECT EXISTS(SELECT 1 FROM privacy_deleted_subjects WHERE subject_digest=%s) AS blocked",
                     (hashlib.sha256(user_id.encode()).hexdigest(),),

@@ -1,5 +1,5 @@
 """Disposable PostgreSQL accounts only: erasure, recovery and billing boundaries."""
-import os,uuid,json
+import asyncio,os,uuid,json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import pytest,pytest_asyncio
@@ -25,6 +25,7 @@ async def make_account():
     await fund_paid(user,'500')
     await database.execute("INSERT INTO account_profiles(user_id,data) VALUES (%s,%s::jsonb)",(user,json.dumps({'display_name':'PRIVATE_NAME','photo':'PRIVATE_PHOTO'})))
     await database.execute("INSERT INTO generations(id,user_id,provider,generation_type,status,request,result) VALUES (%s,%s,'ltx','text-to-video','succeeded',%s::jsonb,%s::jsonb)",(gen,user,json.dumps({'prompt':'PRIVATE_PROMPT'}),json.dumps({'object_key':f'generations/{gen}/video.mp4'})))
+    await database.execute("INSERT INTO generation_idempotency(id,idempotency_key,request_fingerprint,response,generation_id) VALUES (%s,%s,'private-fingerprint',%s::jsonb,%s)",(str(uuid.uuid4()),'legacy:'+gen,json.dumps({'private_result':'PRIVATE_RETRY_RESULT'}),gen))
     await database.execute("INSERT INTO media_assets(id,user_id,asset_type,object_key,content_type,size_bytes) VALUES (%s,%s,'source_image',%s,'image/jpeg',10)",(asset,user,f'source-images/{user}/{asset}.jpg'))
     await database.execute('INSERT INTO speech_assets(id,user_id,object_key,duration_seconds,billable_seconds) VALUES (%s,%s,%s,3,3)',(gen,user,f'source-speech/{user}/{gen}.wav'))
     await database.execute("INSERT INTO story_projects(id,user_id,title,prompt) VALUES (%s,%s,'PRIVATE_TITLE','PRIVATE_STORY')",(story,user))
@@ -52,6 +53,8 @@ async def test_full_erasure_preserves_other_accounts_and_blocks_old_tokens(priva
     assert await database.fetch_one('SELECT id FROM auth.users WHERE id=%s',(owner,)) is None
     assert await database.fetch_one('SELECT id FROM generations WHERE id=%s',(gen,)) is None
     assert await database.fetch_one('SELECT id FROM generations WHERE id=%s',(other_gen,))
+    assert await database.fetch_one('SELECT id FROM generation_idempotency WHERE idempotency_key=%s',('legacy:'+gen,)) is None
+    assert await database.fetch_one('SELECT id FROM generation_idempotency WHERE idempotency_key=%s',('legacy:'+other_gen,))
     assert f'generations/{gen}/' in removed and f'generations/{assembly}/' in removed
     assert f'generations/{other_gen}/' not in removed
     state=await database.fetch_one('SELECT user_id,status,manifest FROM privacy_deletions WHERE id=%s',(job['id'],))
@@ -91,3 +94,33 @@ async def test_late_verified_payment_never_recreates_or_credits_deleted_account(
     result=await payments._fulfill_verified_transaction({'reference':order['reference'],'id':order['provider_transaction_id'],'amount':order['amount_kobo'],'currency':'NGN','status':'success','domain':order['mode']})
     assert result['credited'] is False and result['status']=='account_deleted'
     assert await database.fetch_one('SELECT user_id FROM wallets WHERE user_id=%s',(owner,)) is None
+
+@pytest.mark.asyncio
+async def test_delayed_signin_waits_for_erasure_and_cannot_recreate_user(privacy_db,monkeypatch):
+    owner=str(uuid.uuid4())
+    monkeypatch.setattr(auth,'get_verified_user_id',AsyncMock(return_value=owner))
+    monkeypatch.setattr(auth.database,'database_configured',lambda:True)
+    request=Request({'type':'http','headers':[],'method':'GET','path':'/'})
+    task=None
+    try:
+        async with database._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))',(privacy.lock_key(owner),))
+                task=asyncio.create_task(auth.get_authenticated_user_id(request))
+                async def wait_until_fenced():
+                    while not task.done():
+                        waiting=await database.fetch_one("SELECT count(*) AS n FROM pg_locks WHERE locktype='advisory' AND NOT granted",())
+                        if waiting['n']:return
+                        await asyncio.sleep(.01)
+                    pytest.fail('Sign-in bypassed the erasure lifecycle lock')
+                await asyncio.wait_for(wait_until_fenced(),3)
+                assert await database.fetch_one('SELECT id FROM users WHERE id=%s',(owner,)) is None
+                await conn.execute('INSERT INTO privacy_deleted_subjects(subject_digest) VALUES (%s)',(privacy.digest(owner),))
+        with pytest.raises(HTTPException) as exc:await asyncio.wait_for(task,3)
+        assert exc.value.status_code==403
+        assert await database.fetch_one('SELECT id FROM users WHERE id=%s',(owner,)) is None
+    finally:
+        if task and not task.done():
+            task.cancel()
+            try:await task
+            except asyncio.CancelledError:pass
