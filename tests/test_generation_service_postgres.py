@@ -71,6 +71,19 @@ async def test_create_reserves_server_quote_and_replays_idempotently(generation_
     assert Decimal(row["available_credits"]) == Decimal("500.00") - Decimal(first["credits_reserved"])
     assert row["outbox_count"] == 1
 
+    # Audio-on was the provider's historical default. Explicitly selecting it
+    # must replay an older request without another reservation or submission.
+    audio_replay=await generation_service.create_reserved_generation(user_id,'request-1',generate_audio=True,**kwargs)
+    assert audio_replay['generation_id']==first['generation_id']
+    with pytest.raises(generation_service.GenerationRequestConflict):
+        await generation_service.create_reserved_generation(user_id,'request-1',generate_audio=False,**kwargs)
+
+    silent=await generation_service.create_reserved_generation(user_id,'silent-request',generate_audio=False,**kwargs)
+    silent_replay=await generation_service.create_reserved_generation(user_id,'silent-request',generate_audio=False,**kwargs)
+    assert silent['generation_id']==silent_replay['generation_id']
+    persisted=await database.fetch_one('SELECT request FROM generations WHERE id=%s',(silent['generation_id'],))
+    assert persisted['request']['generate_audio'] is False
+
     with pytest.raises(generation_service.GenerationRequestConflict):
         await generation_service.create_reserved_generation(
             user_id, "request-1", **{**kwargs, "prompt": "different prompt"}
@@ -198,3 +211,4 @@ async def test_reviewed_price_replay_never_queues_or_charges_again(generation_se
     assert replay['generation_id']==first['generation_id'] and replay['duplicate'] is True
     assert replay['credits_reserved']==first['credits_reserved']
     assert (await database.fetch_one('SELECT COUNT(*) AS n FROM generation_outbox WHERE generation_id=%s',(first['generation_id'],)))['n']==1
+

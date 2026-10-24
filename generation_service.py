@@ -60,6 +60,7 @@ async def create_reserved_generation(
     image_url: str | None = None,
     source_image_id: str | None = None,
     credit_limit: Decimal | None = None,
+    generate_audio: bool = True,
 ) -> dict[str, Any]:
     """Create one billable generation in one PostgreSQL transaction.
 
@@ -69,6 +70,8 @@ async def create_reserved_generation(
     """
     if database._pool is None:
         raise RuntimeError("Durable generation storage is required.")
+    if not isinstance(generate_audio, bool):
+        raise ValueError("Sound selection must be a boolean.")
     if credit_limit is not None:
         credit_limit = Decimal(str(credit_limit))
         if not credit_limit.is_finite() or credit_limit <= 0 or credit_limit.quantize(Decimal("0.01")) != credit_limit:
@@ -110,6 +113,10 @@ async def create_reserved_generation(
         # Non-production compatibility only. The production HTTP endpoint rejects
         # public source URLs and requires source_image_id.
         normalized["image_url"] = image_url
+    # Existing jobs omitted this field and the provider default was audio on.
+    # Preserve their fingerprint for safe replay; silence is a distinct request.
+    if not generate_audio:
+        normalized["generate_audio"] = False
     serialized, fingerprint = _canonical_request(normalized)
     generation_id = str(uuid.uuid4())
     outbox_id = str(uuid.uuid4())
@@ -261,3 +268,4 @@ async def create_reserved_generation(
         "credits_reserved": str(amount),
         "quote": quote,
     }
+

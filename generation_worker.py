@@ -135,6 +135,7 @@ async def _dispatch(generation: dict[str, Any]) -> None:
         "model": str(request["model"]),
         "resolution": str(request["resolution"]),
         "duration": int(request["duration"]),
+        "generate_audio": request.get("generate_audio", True),
     }
     if request.get("aspect_ratio"):
         payload["aspect_ratio"] = request["aspect_ratio"]
@@ -403,3 +404,4 @@ async def run_worker() -> None:
 
 if __name__ == "__main__":
     asyncio.run(run_worker())
+
