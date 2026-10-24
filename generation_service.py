@@ -149,6 +149,9 @@ async def create_reserved_generation(
 
     async with database._pool.connection() as conn:
         async with conn.transaction():
+            await conn.execute('SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))',('account-lifecycle:'+owner,))
+            active=await (await conn.execute('SELECT status FROM users WHERE id=%s FOR SHARE',(owner,))).fetchone()
+            if not active or active['status']!='active':raise ValueError('This account is not active.')
             await require_account_agreement(conn,owner)
             # The idempotency key is scoped to the authenticated owner.
             inserted = await (await conn.execute(

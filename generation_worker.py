@@ -360,7 +360,7 @@ async def _reconcile(generation: dict[str, Any]) -> int:
     raise RuntimeError("provider_returned_unknown_status")
 
 
-async def process_event(event: dict[str, Any], worker_id: str) -> None:
+async def _process_event_unlocked(event: dict[str, Any], worker_id: str) -> None:
     event_id = event["id"]
     generation_id = event["generation_id"]
     token = event["lease_token"]
@@ -400,6 +400,13 @@ async def process_event(event: dict[str, Any], worker_id: str) -> None:
         logger.exception("Generation worker event failed (event=%s)", event_id)
 
 
+async def process_event(event: dict[str, Any], worker_id: str) -> None:
+    import account_privacy
+    row=await _load_generation(event['generation_id'])
+    if not row:return
+    async with account_privacy.worker_guard(row.get('user_id')) as active:
+        if active:await _process_event_unlocked(event,worker_id)
+
 async def run_worker() -> None:
     if not database.database_configured():
         raise RuntimeError("DATABASE_URL must be configured for the generation worker.")
@@ -409,6 +416,8 @@ async def run_worker() -> None:
     await initialize_wallet_schema()
     await generation_outbox.initialize_outbox_schema()
     await speech_assets.initialize_schema()
+    import account_privacy
+    await account_privacy.initialize_schema()
     worker_id = f"{socket.gethostname()}-{uuid.uuid4()}"
     logger.info("Generation worker started with id %s", worker_id)
     try:

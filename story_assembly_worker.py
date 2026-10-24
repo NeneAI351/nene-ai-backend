@@ -128,7 +128,7 @@ async def _heartbeat(job_id: str, user_id: str, worker_id: str, stop: asyncio.Ev
         except asyncio.TimeoutError:
             pass
 
-async def _process(job: dict[str,Any]) -> None:
+async def _process_unlocked(job: dict[str,Any]) -> None:
     job_id,story_id,user_id=job["id"],job["story_id"],job["user_id"]
     worker_id=job.get("lease_owner","")
     stop_heartbeat=asyncio.Event()
@@ -176,10 +176,17 @@ async def _process(job: dict[str,Any]) -> None:
         except asyncio.CancelledError:
             pass
 
+async def _process(job: dict[str,Any]) -> None:
+    import account_privacy
+    async with account_privacy.worker_guard(job.get('user_id')) as active:
+        if active:await _process_unlocked(job)
+
 async def run_worker() -> None:
     if not database.database_configured(): raise RuntimeError("DATABASE_URL is required")
     await database.start_database()
     await story_store.initialize_story_schema()
+    import account_privacy
+    await account_privacy.initialize_schema()
     worker_id=f"story-assembly-{uuid.uuid4()}"
     try:
         while True:

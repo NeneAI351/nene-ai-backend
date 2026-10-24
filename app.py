@@ -38,6 +38,7 @@ from stories import router as stories_router
 import story_store
 import speech_assets
 import speech_synthesis
+import account_privacy
 from director import router as director_router, initialize_director_schema
 from provider_routes import router as provider_router
 import database
@@ -108,6 +109,7 @@ app.include_router(payments_router)
 app.include_router(readiness_router)
 app.include_router(speech_assets.router)
 app.include_router(speech_synthesis.router)
+app.include_router(account_privacy.router)
 app.include_router(projects_router)
 app.include_router(characters_router)
 app.include_router(stories_router)
@@ -144,10 +146,17 @@ async def _startup_database():
         await story_store.initialize_story_schema()
         await speech_assets.initialize_schema()
         await initialize_director_schema()
+        await account_privacy.initialize_schema()
+        app.state.privacy_cleanup_task = asyncio.create_task(account_privacy.cleanup_loop())
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
 async def _shutdown_database():
+    task = getattr(app.state,"privacy_cleanup_task",None)
+    if task:
+        task.cancel()
+        try:await task
+        except asyncio.CancelledError:pass
     await close_database()
     await close_rate_limit_client()
 
@@ -323,6 +332,7 @@ async def image_upload(req: ImageUploadRequest, request: Request):
         stored = None
         try:
             stored = await asyncio.to_thread(media_storage.upload_source_image, raw, user_id, asset_id)
+            await account_privacy.ensure_active_upload(user_id)
             await database.execute(
                 """INSERT INTO media_assets
                    (id,user_id,asset_type,object_key,content_type,size_bytes)

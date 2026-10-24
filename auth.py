@@ -7,6 +7,7 @@ Tokens are never accepted from query parameters or request bodies.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import uuid
 from functools import lru_cache
@@ -25,7 +26,7 @@ def _jwks_client(url: str) -> PyJWKClient:
     return PyJWKClient(url, cache_keys=True, lifespan=300, timeout=5)
 
 
-async def get_authenticated_user_id(request: Request) -> str:
+async def get_verified_user_id(request: Request) -> str:
     """Validate a signed bearer token, then ensure its user row exists.
 
     The user ID comes only from a cryptographically verified JWT subject. Any
@@ -89,12 +90,24 @@ async def get_authenticated_user_id(request: Request) -> str:
     except (jwt.PyJWTError, ValueError, TypeError, AttributeError):
         raise HTTPException(status_code=401, detail="The sign-in token is invalid or expired.")
 
+    request.state.auth_claims = claims
+    return user_id
+
+
+async def get_authenticated_user_id(request: Request) -> str:
+    user_id = await get_verified_user_id(request)
     if not database.database_configured() or database._pool is None:
         raise HTTPException(status_code=503, detail="NENE AI account storage is not configured.")
 
     try:
         async with database._pool.connection() as conn:
             async with conn.transaction():
+                blocked = await (await conn.execute(
+                    "SELECT EXISTS(SELECT 1 FROM privacy_deleted_subjects WHERE subject_digest=%s) AS blocked",
+                    (hashlib.sha256(user_id.encode()).hexdigest(),),
+                )).fetchone()
+                if blocked and blocked.get("blocked"):
+                    raise HTTPException(status_code=403, detail="This NENE AI account has been deleted or is being deleted.")
                 await conn.execute(
                     "INSERT INTO users(id) VALUES (%s) ON CONFLICT(id) DO NOTHING",
                     (user_id,),
@@ -103,6 +116,8 @@ async def get_authenticated_user_id(request: Request) -> str:
                     "SELECT status FROM users WHERE id=%s",
                     (user_id,),
                 )).fetchone()
+    except HTTPException:
+        raise
     except Exception:
         # Do not leak SQL, connection details, tokens, or provider claims.
         raise HTTPException(status_code=503, detail="NENE AI could not verify the account status.")

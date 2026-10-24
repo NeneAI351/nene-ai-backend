@@ -5,7 +5,15 @@ from decimal import Decimal
 import pytest
 
 import generation_worker
+import account_privacy
+from contextlib import asynccontextmanager
 
+
+@pytest.fixture(autouse=True)
+def isolate_account_guard(monkeypatch):
+    @asynccontextmanager
+    async def active(owner):yield True
+    monkeypatch.setattr(account_privacy,'worker_guard',active)
 
 @pytest.mark.asyncio
 async def test_restart_during_submission_is_marked_unknown_without_second_provider_call(monkeypatch):

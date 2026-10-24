@@ -78,6 +78,13 @@ async def initialize_payment_schema() -> None:
     async with database._pool.connection() as conn:
         async with conn.transaction():
             await conn.execute("""
+                CREATE TABLE IF NOT EXISTS privacy_payment_archive (
+                    reference TEXT PRIMARY KEY,provider TEXT NOT NULL,mode TEXT NOT NULL,
+                    amount_kobo BIGINT NOT NULL,currency TEXT NOT NULL,status TEXT NOT NULL,
+                    provider_transaction_id TEXT,created_at TIMESTAMPTZ NOT NULL,paid_at TIMESTAMPTZ,
+                    retain_until TIMESTAMPTZ NOT NULL DEFAULT NOW()+INTERVAL '7 years');
+                ALTER TABLE privacy_payment_archive ENABLE ROW LEVEL SECURITY;
+                REVOKE ALL ON privacy_payment_archive FROM PUBLIC;
                 CREATE TABLE IF NOT EXISTS payment_orders (
                     id UUID PRIMARY KEY,
                     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -178,6 +185,21 @@ async def _fulfill_verified_transaction(transaction: dict[str, Any]) -> dict[str
                 (reference,),
             )).fetchone()
             if not order:
+                # Deleted accounts must never be recreated or credited by a late
+                # webhook. Keep only minimal accounting facts in their archive.
+                archived=await (await conn.execute("SELECT mode,amount_kobo,currency,provider_transaction_id FROM privacy_payment_archive WHERE reference=%s FOR UPDATE",(reference,))).fetchone()
+                if archived:
+                    await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("paystack-transaction:"+tx_id,))
+                    used=await (await conn.execute("SELECT reference FROM payment_orders WHERE provider='paystack' AND provider_transaction_id=%s LIMIT 1",(tx_id,))).fetchone()
+                    if used:raise HTTPException(status_code=409,detail="Payment transaction already belongs to another order.")
+                    other=await (await conn.execute("SELECT reference FROM privacy_payment_archive WHERE provider='paystack' AND provider_transaction_id=%s AND reference<>%s LIMIT 1",(tx_id,reference))).fetchone()
+                    if other:raise HTTPException(status_code=409,detail="Payment transaction already belongs to another archived order.")
+                    if transaction.get("domain")!=archived["mode"] or amount_kobo!=int(archived["amount_kobo"]) or archived["currency"]!="NGN":
+                        raise HTTPException(status_code=400,detail="Payment details do not match the archived order.")
+                    if archived.get("provider_transaction_id") and str(archived["provider_transaction_id"])!=tx_id:
+                        raise HTTPException(status_code=409,detail="Archived payment transaction conflict.")
+                    await conn.execute("UPDATE privacy_payment_archive SET status='success',provider_transaction_id=%s WHERE reference=%s",(tx_id,reference))
+                    return {"ok":True,"credited":False,"status":"account_deleted"}
                 raise HTTPException(status_code=404, detail="Payment order was not found.")
             if transaction.get("domain") != order["mode"]:
                 raise HTTPException(status_code=400, detail="Payment environment does not match the order.")
@@ -200,6 +222,8 @@ async def _fulfill_verified_transaction(transaction: dict[str, Any]) -> dict[str
                      AND reference<>%s LIMIT 1""",
                 (tx_id, reference),
             )).fetchone()
+            archived_claim=await (await conn.execute("SELECT reference FROM privacy_payment_archive WHERE provider='paystack' AND provider_transaction_id=%s AND reference<>%s LIMIT 1",(tx_id,reference))).fetchone()
+            if archived_claim:raise HTTPException(status_code=409,detail="Payment transaction belongs to a deleted account order.")
             if claimed:
                 raise HTTPException(status_code=409, detail="This transaction ID is already linked to another payment.")
             if order["status"] == "success":
