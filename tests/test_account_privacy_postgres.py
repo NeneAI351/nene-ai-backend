@@ -124,3 +124,32 @@ async def test_delayed_signin_waits_for_erasure_and_cannot_recreate_user(privacy
             task.cancel()
             try:await task
             except asyncio.CancelledError:pass
+
+@pytest.mark.asyncio
+async def test_account_export_is_owner_scoped_and_excludes_payment_secrets(privacy_db):
+    owner,gen,_,_=await make_account();other,other_gen,_,_=await make_account()
+    await database.execute("UPDATE payment_orders SET authorization_url='https://checkout.invalid/PRIVATE_CHECKOUT',access_code='PRIVATE_PAYMENT_ACCESS' WHERE user_id=%s",(owner,))
+    exported=await privacy.export_account_records(owner)
+    body=json.dumps(exported)
+    assert exported['format']=='nene-ai-account-records-v1'
+    assert gen in body and other_gen not in body and other not in body
+    assert 'PRIVATE_PROMPT' in body and 'PRIVATE_NAME' in body
+    assert 'PRIVATE_CHECKOUT' not in body and 'PRIVATE_PAYMENT_ACCESS' not in body
+    assert 'authorization_url' not in body and 'access_code' not in body
+    assert exported['records']['account'][0]['id']==owner
+
+@pytest.mark.asyncio
+async def test_export_needs_no_terms_and_never_silently_truncates(privacy_db,monkeypatch):
+    owner=str(uuid.uuid4())
+    await database.execute('INSERT INTO users(id) VALUES (%s)',(owner,))
+    data=await privacy.export_account_records(owner)
+    assert data['records']['agreements']==[]
+    monkeypatch.setattr(privacy,'EXPORT_SECTION_LIMIT',0)
+    with pytest.raises(HTTPException) as exc:await privacy.export_account_records(owner)
+    assert exc.value.status_code==413 and 'no partial file' in exc.value.detail
+
+@pytest.mark.asyncio
+async def test_deleted_or_deleting_account_cannot_export_records(privacy_db):
+    owner,_,_,_=await make_account();await claim(owner)
+    with pytest.raises(HTTPException) as exc:await privacy.export_account_records(owner)
+    assert exc.value.status_code==403

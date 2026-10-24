@@ -79,3 +79,20 @@ def test_direct_identity_erasure_cannot_target_an_unrelated_auth_database(monkey
     assert privacy.auth_project_matches() is False
     monkeypatch.setattr(database_module,'DATABASE_URL','postgresql://postgres:fake@db.project-a.supabase.co/postgres')
     assert privacy.auth_project_matches() is True
+
+@pytest.mark.asyncio
+async def test_export_requires_signin_and_disables_response_caching(monkeypatch):
+    app=FastAPI();app.include_router(privacy.router)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        response=await client.get('/api/privacy/account-export')
+    assert response.status_code==401
+    app.dependency_overrides[privacy.get_authenticated_user_id]=lambda:OWNER
+    monkeypatch.setattr(privacy.database,'_pool',object())
+    monkeypatch.setattr(privacy,'enforce_rate_limit',AsyncMock())
+    export=AsyncMock(return_value={'format':'nene-ai-account-records-v1','records':{'account':[{'id':OWNER}]}})
+    monkeypatch.setattr(privacy,'export_account_records',export)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
+        response=await client.get('/api/privacy/account-export?user_id='+OTHER)
+    export.assert_awaited_once_with(OWNER)
+    assert response.headers['cache-control']=='no-store, private'
+    assert 'attachment;' in response.headers['content-disposition']

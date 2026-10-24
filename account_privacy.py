@@ -4,10 +4,13 @@ import asyncio,hashlib,json,logging,os,re,uuid
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 import httpx
+from datetime import datetime,timezone
 from fastapi import APIRouter,Depends,HTTPException,Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel,ConfigDict,Field,field_validator
 import database,media_storage
-from auth import get_verified_user_id
+from auth import get_verified_user_id,get_authenticated_user_id
 from rate_limits import enforce_rate_limit
 
 router=APIRouter(prefix='/api/privacy',tags=['privacy'])
@@ -84,6 +87,57 @@ async def capabilities():
 
 @router.get('/availability')
 async def availability():return await capabilities()
+
+# Fixed projections exclude passwords, session tokens, payment authorization
+# URLs/codes, worker leases and provider credentials. Browser input never chooses
+# a table, projection, owner or SQL fragment.
+EXPORT_SECTIONS={
+ 'account':('users','id','id,email,display_name,avatar_url,status,created_at,updated_at'),
+ 'profile':('account_profiles','user_id','data,updated_at'),
+ 'projects':('projects','user_id','id,name,description,status,created_at,updated_at'),
+ 'characters':('characters','user_id','id,project_id,name,profile,created_at,updated_at'),
+ 'generations':('generations','user_id',"id,project_id,generation_type,status,request->>'prompt' AS prompt,credits_reserved,credits_charged,credits_refunded,created_at,updated_at,completed_at"),
+ 'plans_and_scripts':('director_plans','user_id','id,brief,status,plan,credit_cost,billing_state,created_at'),
+ 'stories':('story_projects','user_id','id,project_id,title,prompt,character_lock,status,created_at,updated_at'),
+ 'story_scenes':('story_scenes','user_id','id,story_id,scene_index,prompt,duration_seconds,generate_audio,sound_direction,status,created_at,updated_at'),
+ 'source_images':('media_assets','user_id','id,asset_type,content_type,size_bytes,created_at,deleted_at'),
+ 'source_recordings':('speech_assets','user_id','id,duration_seconds,billable_seconds,created_at'),
+ 'wallet':('wallets','user_id','available_credits,reserved_credits,lifetime_purchased,lifetime_consumed,created_at,updated_at'),
+ 'credit_history':('credit_ledger','user_id','id,generation_id,entry_type,amount,balance_after,created_at'),
+ 'purchases':('payment_orders','user_id','id,reference,provider,mode,package_id,amount_kobo,currency,credits,status,created_at,paid_at'),
+ 'agreements':('account_agreements','user_id','terms_version,refund_policy_version,terms_snapshot,accepted_at'),
+ 'support_reports':('support_reports','user_id','id,kind,message,rating,status,created_at'),
+}
+EXPORT_SECTION_LIMIT=500
+EXPORT_MAX_BYTES=8*1024*1024
+
+async def export_account_records(owner):
+    sections={};unavailable=[]
+    async with database._pool.connection() as conn:
+        async with conn.transaction():
+            await conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+            await conn.execute('SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))',(lock_key(owner),))
+            state=await (await conn.execute('SELECT status FROM users WHERE id=%s',(owner,))).fetchone()
+            if not state or state['status']!='active':raise HTTPException(403,'This account is no longer active.')
+            for name,(table,owner_column,columns) in EXPORT_SECTIONS.items():
+                exists=await (await conn.execute('SELECT to_regclass(%s) AS name',('public.'+table,))).fetchone()
+                if not exists['name']:unavailable.append(name);continue
+                rows=await (await conn.execute(f'SELECT {columns} FROM {table} WHERE {owner_column}=%s LIMIT %s',(owner,EXPORT_SECTION_LIMIT+1))).fetchall()
+                if len(rows)>EXPORT_SECTION_LIMIT:
+                    raise HTTPException(413,'This account needs a larger export. Use Privacy help to request a complete copy; no partial file was downloaded.')
+                sections[name]=rows
+    data=jsonable_encoder({'format':'nene-ai-account-records-v1','exported_at':datetime.now(timezone.utc),'records':sections,'unavailable_sections':unavailable,
+       'scope':'Server-held account records. Download video, audio and source files separately from their creation screens. Browser-only drafts, security logs and service-provider copies are not included. Use Privacy help for additional data requests.'})
+    if len(json.dumps(data).encode())>EXPORT_MAX_BYTES:
+        raise HTTPException(413,'This account needs a larger export. Use Privacy help to request a complete copy; no partial file was downloaded.')
+    return data
+
+@router.get('/account-export')
+async def account_export(request:Request,owner:str=Depends(get_authenticated_user_id)):
+    await enforce_rate_limit(request,bucket='privacy-export',limit=3,window_seconds=3600)
+    if database._pool is None:raise HTTPException(503,'Account export is temporarily unavailable.')
+    data=await export_account_records(owner)
+    return JSONResponse(data,headers={'Cache-Control':'no-store, private','Pragma':'no-cache','Content-Disposition':'attachment; filename="nene-ai-account-records.json"','X-Content-Type-Options':'nosniff'})
 
 class DeleteRequest(BaseModel):
     model_config=ConfigDict(extra='forbid')
