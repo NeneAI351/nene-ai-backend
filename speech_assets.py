@@ -73,6 +73,8 @@ async def upload(body:SpeechUpload,request:Request,owner:str=Depends(get_authent
         client=media_storage._client();bucket=media_storage._storage_config()['bucket']
         await asyncio.to_thread(client.put_object,Bucket=bucket,Key=key,Body=data,ContentType='audio/wav',ContentLength=len(data),CacheControl='private, no-store')
         stored=True
+        from account_privacy import ensure_active_upload
+        await ensure_active_upload(owner)
         await database.execute('INSERT INTO speech_assets(id,user_id,object_key,duration_seconds,billable_seconds) VALUES (%s,%s,%s,%s,%s)',(asset,owner,key,duration,billable))
     except Exception:
         if stored:
