@@ -92,6 +92,7 @@ async def availability():return await capabilities()
 # URLs/codes, worker leases and provider credentials. Browser input never chooses
 # a table, projection, owner or SQL fragment.
 EXPORT_SECTIONS={
+ 'editor_exports':('editor_export_receipts','user_id','id,project_digest,credit_cost,created_at'),
  'account':('users','id','id,email,display_name,avatar_url,status,created_at,updated_at'),
  'profile':('account_profiles','user_id','data,updated_at'),
  'projects':('projects','user_id','id,name,description,status,created_at,updated_at'),
