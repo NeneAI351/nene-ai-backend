@@ -39,6 +39,7 @@ import story_store
 import speech_assets
 import speech_synthesis
 import account_privacy
+import editor_exports
 from director import router as director_router, initialize_director_schema
 from provider_routes import router as provider_router
 import database
@@ -110,6 +111,7 @@ app.include_router(readiness_router)
 app.include_router(speech_assets.router)
 app.include_router(speech_synthesis.router)
 app.include_router(account_privacy.router)
+app.include_router(editor_exports.router)
 app.include_router(projects_router)
 app.include_router(characters_router)
 app.include_router(stories_router)
@@ -147,6 +149,7 @@ async def _startup_database():
         await speech_assets.initialize_schema()
         await initialize_director_schema()
         await account_privacy.initialize_schema()
+        await editor_exports.initialize_schema()
         app.state.privacy_cleanup_task = asyncio.create_task(account_privacy.cleanup_loop())
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
