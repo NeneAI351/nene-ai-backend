@@ -1,0 +1,62 @@
+# Prepared only: applying this Blueprint creates one paid background worker.
+# The worker stays parked until NENE_GENERATION_WORKER_ENABLED is true.
+previews:
+  generation: 'off'
+services:
+- type: worker
+  name: nene-ai-staging-generation-worker
+  runtime: python
+  plan: 0.5c-512mb
+  region: oregon
+  numInstances: 1
+  repo: https://github.com/NeneAI351/nene-ai-backend
+  branch: verify/android-readiness-20261023
+  buildCommand: pip install -r requirements.txt
+  startCommand: python generation_worker.py
+  autoDeployTrigger: checksPass
+  maxShutdownDelaySeconds: 300
+  envVars:
+  - key: NENE_ENV
+    value: staging
+  - key: NENE_GENERATION_WORKER_ENABLED
+    value: 'false'
+  - key: DATABASE_URL
+    fromService:
+      name: nene-ai-staging
+      type: web
+      envVarKey: DATABASE_URL
+  - key: LTX_API_KEY
+    fromService:
+      name: nene-ai-staging
+      type: web
+      envVarKey: LTX_API_KEY
+  - key: NENE_MEDIA_BUCKET
+    fromService:
+      name: nene-ai-staging
+      type: web
+      envVarKey: NENE_MEDIA_BUCKET
+  - key: NENE_MEDIA_REGION
+    fromService:
+      name: nene-ai-staging
+      type: web
+      envVarKey: NENE_MEDIA_REGION
+  - key: NENE_MEDIA_ENDPOINT
+    fromService:
+      name: nene-ai-staging
+      type: web
+      envVarKey: NENE_MEDIA_ENDPOINT
+  - key: NENE_MEDIA_ACCESS_KEY_ID
+    fromService:
+      name: nene-ai-staging
+      type: web
+      envVarKey: NENE_MEDIA_ACCESS_KEY_ID
+  - key: NENE_MEDIA_SECRET_ACCESS_KEY
+    fromService:
+      name: nene-ai-staging
+      type: web
+      envVarKey: NENE_MEDIA_SECRET_ACCESS_KEY
+  - key: ALLOWED_MEDIA_HOSTS
+    fromService:
+      name: nene-ai-staging
+      type: web
+      envVarKey: ALLOWED_MEDIA_HOSTS

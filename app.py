@@ -11,22 +11,112 @@ import shutil
 import socket
 import ipaddress
 from pathlib import Path
+from decimal import Decimal
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from database import (database_configured, start_database, close_database, initialize_schema, get_idempotency as db_get_idempotency, create_idempotency as db_create_idempotency, complete_idempotency as db_complete_idempotency, delete_idempotency as db_delete_idempotency)
-from pricing import quote as pricing_quote, catalog as pricing_catalog
+from pricing import quote as pricing_quote, catalog as pricing_catalog, package_economics, video_capacity
+from wallet import router as wallet_router
+from account_terms import router as account_terms_router
+from account_profile import router as account_profile_router, initialize_profile_schema
+from account_agreement_store import initialize_account_agreement_schema
+from payments import router as payments_router, initialize_payment_schema
+from wallet_store import initialize_wallet_schema
+from rate_limits import enforce_rate_limit, close_rate_limit_client
+from auth import get_authenticated_user_id
+from readiness import router as readiness_router
+from projects import router as projects_router
+from characters import router as characters_router
+from stories import router as stories_router
+import story_store
+import speech_assets
+import speech_synthesis
+import account_privacy
+import editor_exports
+from director import router as director_router, initialize_director_schema
+from provider_routes import router as provider_router
+import database
+import generation_store
+import generation_service
+import media_storage
+from generation_service import GenerationRequestConflict, InsufficientCredits, GenerationPriceChanged
+from generation_outbox import initialize_outbox_schema
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("nene-ai")
-app = FastAPI(title="NENE AI Backend", version="0.10.0-commercial-pricing-foundation")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="NENE AI Backend", version="0.13.0-scale-security-foundation")
+
+
+def _is_production_environment() -> bool:
+    # Staging exercises the same security boundaries as production; only an
+    # explicit local development environment may use prototype compatibility.
+    configured = os.getenv("NENE_ENV", "").strip().lower()
+    if configured:
+        return configured in {"production", "staging"}
+    # Hosted deployments must not silently inherit development-only defaults.
+    return bool(os.getenv("RENDER_SERVICE_ID") or os.getenv("K_SERVICE") or os.getenv("FLY_APP_NAME"))
+
+
+def _cors_origins() -> list[str]:
+    configured = [
+        origin.strip().rstrip("/")
+        for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if configured:
+        return configured
+    # Development convenience only. Production must explicitly list the real
+    # NENE AI web origins; native clients do not depend on browser CORS.
+    if _is_production_environment():
+        return []
+    return ["*"]
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
+)
+
+
+@app.middleware("http")
+async def security_response_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    if request.url.path.startswith("/api/") and not (
+        request.url.path.startswith("/api/story-videos/")
+        or request.url.path.startswith("/api/temp-images/")
+    ):
+        response.headers.setdefault("Cache-Control", "no-store")
+    if _is_production_environment():
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return response
+app.include_router(wallet_router)
+app.include_router(account_terms_router)
+app.include_router(account_profile_router)
+app.include_router(payments_router)
+app.include_router(readiness_router)
+app.include_router(speech_assets.router)
+app.include_router(speech_synthesis.router)
+app.include_router(account_privacy.router)
+app.include_router(editor_exports.router)
+app.include_router(projects_router)
+app.include_router(characters_router)
+app.include_router(stories_router)
+app.include_router(director_router)
+app.include_router(provider_router)
 
 LTX_API_KEY = os.getenv("LTX_API_KEY", "").strip()
 PIXAZO_API_KEY = os.getenv("PIXAZO_API_KEY", "").strip()
@@ -50,11 +140,28 @@ async def _startup_database():
     if database_configured():
         await start_database()
         await initialize_schema()
-        logger.info("NENE AI PostgreSQL database initialized.")
+        await initialize_wallet_schema()
+        await initialize_payment_schema()
+        await initialize_account_agreement_schema()
+        await initialize_profile_schema()
+        await initialize_outbox_schema()
+        await story_store.initialize_story_schema()
+        await speech_assets.initialize_schema()
+        await initialize_director_schema()
+        await account_privacy.initialize_schema()
+        await editor_exports.initialize_schema()
+        app.state.privacy_cleanup_task = asyncio.create_task(account_privacy.cleanup_loop())
+        logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
 async def _shutdown_database():
+    task = getattr(app.state,"privacy_cleanup_task",None)
+    if task:
+        task.cancel()
+        try:await task
+        except asyncio.CancelledError:pass
     await close_database()
+    await close_rate_limit_client()
 
 def _trim_idempotency_registry():
     if len(GENERATION_IDEMPOTENCY) <= GENERATION_IDEMPOTENCY_MAX:
@@ -110,7 +217,10 @@ def health():
     return {
         "ok": True,
         "service": "nene-ai-backend",
-        "version": "0.9.0-postgres-foundation",
+        "version": "0.13.0-scale-security-foundation",
+        "auth_configured": bool(os.getenv("AUTH_JWKS_URL", "").strip() and os.getenv("AUTH_ISSUER", "").strip()),
+        "shared_rate_limit_configured": bool(os.getenv("REDIS_URL", "").strip() and os.getenv("RATE_LIMIT_HMAC_SECRET", "").strip()),
+        "environment": os.getenv("NENE_ENV", "").strip().lower() or ("production" if _is_production_environment() else "development"),
         "database_configured": database_configured(),
         "provider": configured[0] if configured else "none",
         "providers": configured,
@@ -138,6 +248,18 @@ def pricing_catalog_endpoint():
     return {"ok": True, **pricing_catalog()}
 
 
+@app.get("/api/pricing/packages")
+def pricing_package_economics_endpoint():
+    """Return planning economics for the server-owned credit packages."""
+    return {"ok": True, **package_economics()}
+
+
+@app.get("/api/pricing/capacity")
+def pricing_video_capacity_endpoint():
+    """Return calculated credit charges and maximum video counts per package."""
+    return {"ok": True, **video_capacity()}
+
+
 class PricingQuoteRequest(BaseModel):
     provider: str
     model: str = "ltx-2-5-fast"
@@ -158,7 +280,13 @@ def pricing_quote_endpoint(req: PricingQuoteRequest):
 
 
 @app.post("/api/image-upload")
-async def image_upload(req: ImageUploadRequest):
+async def image_upload(req: ImageUploadRequest, request: Request):
+    await enforce_rate_limit(request, bucket="image-upload", limit=10, window_seconds=60)
+    user_id = None
+    if _is_production_environment():
+        user_id = await get_authenticated_user_id(request)
+        if not database_configured():
+            raise HTTPException(status_code=503, detail="Private source-image storage requires the durable database.")
     _cleanup_story_storage()
     """Accept supported browser image data URIs and normalize the file type safely.
 
@@ -173,12 +301,16 @@ async def image_upload(req: ImageUploadRequest):
     declared_mime = header.split(";", 1)[0][5:].lower().strip()
     logger.info("Image upload received: declared_mime=%s encoded_chars=%s", declared_mime, len(encoded))
 
+    # Reject oversized encoded bodies before allocating the decoded image buffer.
+    max_image_bytes = 7 * 1024 * 1024
+    if len(encoded) > ((max_image_bytes + 2) // 3) * 4:
+        raise HTTPException(status_code=400, detail="Image is too large.")
     try:
         raw = base64.b64decode(encoded, validate=True)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid base64 image.")
 
-    if len(raw) > 7 * 1024 * 1024:
+    if len(raw) > max_image_bytes:
         raise HTTPException(status_code=400, detail="Image is too large.")
     if not raw:
         raise HTTPException(status_code=400, detail="Image data is empty.")
@@ -196,19 +328,55 @@ async def image_upload(req: ImageUploadRequest):
         raise HTTPException(status_code=400, detail="Only PNG, JPEG and WEBP images are supported.")
 
     logger.info("Image upload accepted: declared_mime=%s detected_mime=%s bytes=%s", declared_mime, detected_mime, len(raw))
+    if _is_production_environment():
+        # Production source images must never be exposed through /api/temp-images.
+        # The worker mints a short-lived provider-fetch URL only at dispatch.
+        asset_id = str(uuid.uuid4())
+        stored = None
+        try:
+            stored = await asyncio.to_thread(media_storage.upload_source_image, raw, user_id, asset_id)
+            await account_privacy.ensure_active_upload(user_id)
+            await database.execute(
+                """INSERT INTO media_assets
+                   (id,user_id,asset_type,object_key,content_type,size_bytes)
+                   VALUES (%s,%s,'source_image',%s,%s,%s)""",
+                (asset_id, user_id, stored["object_key"], stored["content_type"], stored["size_bytes"]),
+            )
+        except Exception:
+            if stored and stored.get("object_key"):
+                try:
+                    await asyncio.to_thread(media_storage.delete_source_image, stored["object_key"])
+                except Exception:
+                    logger.exception("Could not clean up orphaned source image object.")
+            logger.exception("Private source image could not be stored.")
+            raise HTTPException(status_code=503, detail="Private source-image storage is temporarily unavailable.")
+        return {
+            "ok": True,
+            "source_image_id": asset_id,
+            "mime_type": stored["content_type"],
+            "extension": ext,
+            "private": True,
+        }
+
+    # Development-only compatibility for legacy provider flows. This public
+    # temporary URL is deliberately unavailable in production.
     name = f"{uuid.uuid4().hex}.{ext}"
     path = TEMP_DIR / name
     path.write_bytes(raw)
-    # This public URL is fetched by Pixazo immediately after this request.
     return {
         "ok": True,
         "image_url": f"https://nene-ai.onrender.com/api/temp-images/{name}",
         "mime_type": detected_mime,
         "extension": ext,
+        "private": False,
     }
 
 @app.get("/api/temp-images/{name}")
 async def temp_image(name: str):
+    # Public temporary source-image delivery is legacy-only and must never be
+    # available in production, even for old files left on ephemeral disk.
+    if _is_production_environment():
+        raise HTTPException(status_code=404, detail="Temporary image not found.")
     safe = Path(name).name
     path = TEMP_DIR / safe
     if not path.exists():
@@ -257,9 +425,12 @@ def magic_hour_resolution(value: str) -> str:
 async def magic_hour_upload_image(image_url: str) -> str:
     if not image_url or not image_url.startswith("http"):
         raise HTTPException(status_code=400, detail="Magic Hour image-to-video requires an image URL.")
+    _validate_public_media_url(image_url)
 
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
         source = await client.get(image_url)
+        if 300 <= source.status_code < 400:
+            raise HTTPException(status_code=400, detail="Redirected image URLs are not allowed. Supply the final public image URL.")
         if source.status_code >= 400:
             raise HTTPException(status_code=400, detail="Magic Hour could not download the source image.")
         raw = source.content
@@ -460,6 +631,23 @@ def _validate_public_media_url(url: str):
     hostname = parsed.hostname.rstrip(".").lower()
     if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
         raise HTTPException(status_code=400, detail="Private/local media URLs are not allowed.")
+
+    if _is_production_environment():
+        allowed_hosts = {
+            item.strip().lower().rstrip(".")
+            for item in os.getenv("ALLOWED_MEDIA_HOSTS", "").split(",")
+            if item.strip()
+        }
+        if not allowed_hosts:
+            raise HTTPException(
+                status_code=503,
+                detail="Public media host allowlist is not configured.",
+            )
+        if not any(hostname == allowed or hostname.endswith("." + allowed) for allowed in allowed_hosts):
+            raise HTTPException(
+                status_code=400,
+                detail="This media host is not on NENE AI's approved provider allowlist.",
+            )
     try:
         addresses = {info[4][0] for info in socket.getaddrinfo(hostname, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)}
     except OSError:
@@ -475,7 +663,9 @@ async def _download_story_clip(client: httpx.AsyncClient, url: str, destination:
         raise HTTPException(status_code=400, detail="Story scene URLs must be public HTTP(S) URLs.")
     _validate_public_media_url(url)
     try:
-        async with client.stream("GET", url, follow_redirects=True) as response:
+        async with client.stream("GET", url, follow_redirects=False) as response:
+            if 300 <= response.status_code < 400:
+                raise HTTPException(status_code=400, detail="Redirected media URLs are not allowed. Supply the final public media URL.")
             if response.status_code >= 400:
                 raise HTTPException(status_code=400, detail=f"Could not download story scene: HTTP {response.status_code}.")
             content_length = response.headers.get("content-length")
@@ -519,65 +709,9 @@ def _run_ffmpeg(args: list[str], timeout: int = 300):
 
 
 @app.post("/api/story/assemble")
-async def assemble_story(req: StoryAssembleRequest):
-    _cleanup_story_storage()
-    urls = [str(url).strip() for url in (req.scene_urls or []) if str(url).strip()]
-    if not urls:
-        raise HTTPException(status_code=400, detail="At least one completed story scene is required.")
-    if len(urls) > 20:
-        raise HTTPException(status_code=400, detail="A prototype story can contain at most 20 scenes.")
-    if len(set(urls)) != len(urls):
-        raise HTTPException(status_code=400, detail="Duplicate scene URLs were supplied. Refusing to assemble duplicate clips.")
-
-    work_dir = Path(tempfile.mkdtemp(prefix="nene_story_"))
-    normalized = []
-    try:
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-            for index, url in enumerate(urls, start=1):
-                source = work_dir / f"source_{index:02d}.mp4"
-                normalized_file = work_dir / f"scene_{index:02d}.mp4"
-                await _download_story_clip(client, url, source)
-                # Normalize every clip so different provider encoders/resolutions do
-                # not make the concat step fail. Keep the user's scene order.
-                # Story scenes currently come from providers with audio disabled.
-                # Normalize them to a video-only stream so every clip has identical
-                # stream layout and FFmpeg concat remains deterministic.
-                _run_ffmpeg([
-                    "-i", str(source),
-                    "-vf", "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
-                    "-r", "30",
-                    "-an",
-                    "-c:v", "libx264",
-                    "-preset", "veryfast",
-                    "-crf", "22",
-                    "-movflags", "+faststart",
-                    str(normalized_file),
-                ], timeout=180)
-                normalized.append(normalized_file)
-
-        concat_file = work_dir / "concat.txt"
-        concat_file.write_text(
-            "".join("file '" + str(path).replace("'", "'\\''") + "'\n" for path in normalized),
-            encoding="utf-8",
-        )
-        output_name = f"{uuid.uuid4().hex}_{_safe_story_filename(req.title)}.mp4"
-        output_path = STORY_VIDEO_DIR / output_name
-        _run_ffmpeg([
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
-            "-c", "copy",
-            "-movflags", "+faststart",
-            str(output_path),
-        ], timeout=300)
-        return {
-            "ok": True,
-            "video_url": f"https://nene-ai.onrender.com/api/story-videos/{output_name}",
-            "scene_count": len(urls),
-            "title": req.title,
-        }
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
+async def assemble_story(req: StoryAssembleRequest, request: Request):
+    await get_authenticated_user_id(request)
+    raise HTTPException(status_code=503, detail="Legacy story assembly is disabled. Use the authenticated durable story workflow with paid scene generations.")
 
 
 @app.get("/api/story-videos/{name}")
@@ -627,95 +761,203 @@ async def _generate_uncached(req: GenerateRequest, kind: str):
 
 
 @app.post("/api/generate")
-async def generate(req: GenerateRequest, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
-    kind = req.type.lower().strip()
-    if kind not in {"text-to-video", "image-to-video"}:
-        raise HTTPException(status_code=400, detail="Supported types: text-to-video, image-to-video")
+async def generate(req: GenerateRequest, request: Request, idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key")):
+    # Retired in every environment: this path bypassed atomic wallet billing.
+    await get_authenticated_user_id(request)
+    raise HTTPException(status_code=503, detail="Legacy generation is disabled. Use /api/generations with server-side credit reservations, generation ownership, and durable job recovery. Paid credits are required.")
 
-    key = (idempotency_key or "").strip()
-    if not key:
-        return await _generate_uncached(req, kind)
-    if len(key) > 200:
-        raise HTTPException(status_code=400, detail="Idempotency-Key is too long.")
 
-    request_fingerprint = json.dumps(req.model_dump(), sort_keys=True, default=str)
+@app.get("/api/generation-availability")
+def generation_availability():
+    # Configuration state only: not a provider balance or worker health probe.
+    from readiness import readiness_snapshot
+    checks = readiness_snapshot(production=True)["checks"]
+    enabled = os.getenv("NENE_DURABLE_GENERATION_CREATE_ENABLED", "").strip().lower() == "true"
+    from provider_routing import provider_status
+    from readiness import _valid_media_host_allowlist
+    video_available = any(item['available'] for item in provider_status())
+    accepting = enabled and video_available and _valid_media_host_allowlist(os.getenv('ALLOWED_MEDIA_HOSTS','')) and all(value for key,value in checks.items() if key!='ltx_provider_configured')
+    return {"accepting_requests": accepting, "configuration_only": True,
+            "generate_audio_supported": True,
+            "story_audio_supported": True,
+            "talking_character_supported": True,
+            "speech_uploads_supported": bool(speech_assets.ffmpeg_executable()),
+            "paid_credits_required": True,
+            "message": "Paid video submissions are enabled." if accepting else
+            "Paid video generation is not enabled yet. No credits have been charged."}
 
-    # Same-process joining is kept in memory. PostgreSQL makes completed
-    # idempotency durable across Render restarts and backend instances.
-    if database_configured():
-        try:
-            durable = await db_get_idempotency(key)
-        except Exception as exc:
-            logger.exception("Database idempotency lookup failed.")
-            raise HTTPException(status_code=503, detail=f"NENE AI database is unavailable: {exc}")
-        if durable:
-            if durable.get("request_fingerprint") != request_fingerprint:
-                raise HTTPException(status_code=409, detail="This Idempotency-Key was already used for a different generation request.")
-            if durable.get("response") is not None:
-                return durable["response"]
-            raise HTTPException(status_code=409, detail="This generation is already in progress. Do not submit it again.")
-        try:
-            inserted = await db_create_idempotency(key, request_fingerprint, str(uuid.uuid4()))
-        except Exception as exc:
-            logger.exception("Database idempotency reservation failed.")
-            raise HTTPException(status_code=503, detail=f"NENE AI database is unavailable: {exc}")
-        if not inserted:
-            durable = await db_get_idempotency(key)
-            if durable and durable.get("request_fingerprint") != request_fingerprint:
-                raise HTTPException(status_code=409, detail="This Idempotency-Key was already used for a different generation request.")
-            if durable and durable.get("response") is not None:
-                return durable["response"]
-            raise HTTPException(status_code=409, detail="This generation is already in progress. Do not submit it again.")
 
-    async with GENERATION_IDEMPOTENCY_LOCK:
-        existing = GENERATION_IDEMPOTENCY.get(key)
-        if existing:
-            if existing.get("fingerprint") != request_fingerprint:
-                raise HTTPException(status_code=409, detail="This Idempotency-Key was already used for a different generation request.")
-            task = existing.get("task")
-            if task is None:
-                return existing["response"]
-        else:
-            task = asyncio.create_task(_generate_uncached(req, kind))
-            GENERATION_IDEMPOTENCY[key] = {
-                "fingerprint": request_fingerprint,
-                "task": task,
-                "created_at": asyncio.get_running_loop().time(),
-            }
-            _trim_idempotency_registry()
+class CreateGenerationRequest(BaseModel):
+    type: str = "text-to-video"
+    prompt: str
+    provider: str
+    model: str = "ltx-2-5-fast"
+    resolution: str = "720p"
+    duration: int = 6
+    project_id: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    image_url: Optional[str] = None
+    source_image_id: Optional[str] = None
+    source_audio_id: Optional[str] = None
+    generate_audio: bool = Field(default=True, strict=True)
+    credit_limit: Optional[Decimal] = Field(default=None, gt=0, max_digits=14, decimal_places=2, allow_inf_nan=False)
 
-    try:
-        response = await task
-    except Exception:
-        async with GENERATION_IDEMPOTENCY_LOCK:
-            current = GENERATION_IDEMPOTENCY.get(key)
-            if current and current.get("task") is task:
-                GENERATION_IDEMPOTENCY.pop(key, None)
-        if database_configured():
+
+@app.post("/api/generations", status_code=202)
+async def create_generation_endpoint(
+    req: CreateGenerationRequest,
+    request: Request,
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
+):
+    """Queue a generation after server-side pricing and atomic credit reservation."""
+    # Keep production closed until a supervised worker and provider reconciliation
+    # loop are deployed; otherwise queued jobs could hold credits indefinitely.
+    if _is_production_environment() and os.getenv("NENE_DURABLE_GENERATION_CREATE_ENABLED", "").strip().lower() != "true":
+        raise HTTPException(status_code=503, detail="Durable generation processing is not enabled yet.")
+    await enforce_rate_limit(request, bucket="generation-create", limit=8, window_seconds=60)
+    user_id = await get_authenticated_user_id(request)
+    if not database_configured():
+        raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
+    if req.type not in {"text-to-video", "image-to-video", "audio-to-video"}:
+        raise HTTPException(status_code=400, detail="Unsupported generation type.")
+    # Fail closed before wallet reservation when the only durable worker adapter
+    # is not configured. A queued job without a provider credential can strand
+    # reserved credits and must never be accepted.
+    selected_provider=(req.provider or '').strip().lower()
+    if selected_provider not in {"ltx","magic-hour"}:
+        raise HTTPException(status_code=400, detail="Choose a supported video provider.")
+    if selected_provider == 'ltx' and (not os.getenv("LTX_API_KEY", "").strip() or os.getenv('NENE_LTX_VIDEO_ENABLED','true').strip().lower() != 'true'):
+        raise HTTPException(status_code=503, detail="LTX durable generation is not configured; no credits were reserved.")
+    if req.type == "image-to-video":
+        if _is_production_environment():
+            if not req.source_image_id or req.image_url:
+                raise HTTPException(status_code=400, detail="Image-to-video requires a private source_image_id; public image URLs are not accepted.")
+        elif not (req.source_image_id or req.image_url):
+            raise HTTPException(status_code=400, detail="Image-to-video requires a source image asset.")
+        if req.image_url:
             try:
-                await db_delete_idempotency(key)
+                _validate_public_media_url(req.image_url)
+            except HTTPException:
+                raise
             except Exception:
-                logger.exception("Failed to clear durable idempotency reservation after generation failure.")
-        raise
+                raise HTTPException(status_code=400, detail="Invalid source image URL.")
+    try:
+        result = await generation_service.create_reserved_generation(
+            user_id,
+            idempotency_key or "",
+            prompt=req.prompt,
+            provider=(req.provider or "").strip().lower(),
+            model=req.model,
+            resolution=req.resolution,
+            duration_seconds=req.duration,
+            generation_type=req.type,
+            project_id=req.project_id,
+            aspect_ratio=req.aspect_ratio,
+            image_url=req.image_url,
+            source_image_id=req.source_image_id,
+            source_audio_id=req.source_audio_id,
+            generate_audio=req.generate_audio,
+            credit_limit=req.credit_limit,
+        )
+        return result
+    except InsufficientCredits as exc:
+        raise HTTPException(status_code=402, detail=str(exc))
+    except GenerationPriceChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except GenerationRequestConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except KeyError:
+        raise HTTPException(status_code=400, detail="No active cost rate is configured for this provider/model/resolution.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError:
+        logger.exception("Durable generation creation failed")
+        raise HTTPException(status_code=503, detail="Generation queue is temporarily unavailable.")
 
-    async with GENERATION_IDEMPOTENCY_LOCK:
-        current = GENERATION_IDEMPOTENCY.get(key)
-        if current and current.get("task") is task:
-            current["response"] = response
-            current["task"] = None
-            current["created_at"] = asyncio.get_running_loop().time()
 
-    if database_configured():
-        try:
-            await db_complete_idempotency(key, response)
-        except Exception:
-            # Provider work is already accepted; never turn a successful
-            # generation into an apparent failure that could cause a retry.
-            logger.exception("Generation completed but durable idempotency could not be saved.")
-    return response
+@app.get("/api/generations/{generation_id}")
+async def get_generation(generation_id: str, request: Request):
+    """Authenticated owner-only status polling by NENE's durable generation UUID.
+
+    This endpoint deliberately does not accept a provider name or provider job ID
+    from the client and does not return raw provider payloads/media URLs. Provider
+    reconciliation and private media delivery remain separate server-side duties.
+    """
+    await enforce_rate_limit(request, bucket="generation-poll", limit=60, window_seconds=60)
+    user_id = await get_authenticated_user_id(request)
+    if not database_configured():
+        raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
+    try:
+        row = await generation_store.get_owned_generation(user_id, generation_id)
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
+    if not row:
+        # Same response for unknown IDs and another user's IDs prevents ID probing.
+        raise HTTPException(status_code=404, detail="Generation not found.")
+    return {
+        "ok": True,
+        "generation": {
+            "id": row["id"],
+            "project_id": row.get("project_id"),
+            "type": row["generation_type"],
+            "status": row["status"],
+            "credits_reserved": str(row.get("credits_reserved", "0.00")),
+            "credits_charged": str(row.get("credits_charged", "0.00")),
+            "error": row.get("error"),
+            "created_at": row.get("created_at"),
+            "updated_at": row.get("updated_at"),
+            "completed_at": row.get("completed_at"),
+        },
+    }
+
+
+@app.get("/api/generations/{generation_id}/media-url")
+async def get_generation_media_url(generation_id: str, request: Request):
+    """Return a short-lived signed URL for a completed video owned by the caller.
+
+    The bucket stays private. Signed URLs are bearer credentials, so the TTL is
+    fixed and short; callers must not log or persist the returned URL.
+    """
+    await enforce_rate_limit(request, bucket="generation-media-url", limit=20, window_seconds=60)
+    user_id = await get_authenticated_user_id(request)
+    if not database_configured():
+        raise HTTPException(status_code=503, detail="Durable generation storage is unavailable.")
+    try:
+        parsed_id = str(uuid.UUID(generation_id))
+        owner_id = str(uuid.UUID(user_id))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=404, detail="Generation not found.")
+    row = await database.fetch_one(
+        """SELECT result FROM generations
+           WHERE id=%s AND user_id=%s AND status='succeeded'""",
+        (parsed_id, owner_id),
+    )
+    result = row.get("result") if row else None
+    object_key = result.get("object_key") if isinstance(result, dict) else None
+    if not object_key:
+        # Identical response for unknown, non-owned, unfinished, and non-stored jobs.
+        raise HTTPException(status_code=404, detail="Completed media not found.")
+    try:
+        from media_storage import create_signed_download_url
+        signed_url = await asyncio.to_thread(create_signed_download_url, object_key, 300)
+    except Exception:
+        logger.exception("Private media signing failed for generation %s", parsed_id)
+        raise HTTPException(status_code=503, detail="Video delivery is temporarily unavailable.")
+    return {
+        "ok": True,
+        "generation_id": parsed_id,
+        "url": signed_url,
+        "expires_in": 300,
+        "content_type": "video/mp4",
+    }
+
 
 @app.get("/api/jobs/{job_id}")
 async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
+    if _is_production_environment():
+        raise HTTPException(status_code=503, detail="Production job polling is disabled until authenticated generation ownership is enforced.")
     kind = mode if mode in {"text-to-video", "image-to-video"} else "text-to-video"
     active = (provider or "").lower().strip()
 
@@ -809,4 +1051,6 @@ async def job(job_id: str, mode: str = "text-to-video", provider: str = ""):
         return data
 
     raise HTTPException(status_code=400, detail="Unknown provider. Use pixazo, magic-hour, or ltx.")
+
+
 
