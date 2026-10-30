@@ -25,6 +25,7 @@ import generation_store
 import media_storage
 import provider_costs
 import speech_assets
+from ltx_contract import output_resolution
 from pricing import quote as pricing_quote
 from wallet_store import wallet_capture, wallet_release
 
@@ -138,12 +139,10 @@ async def _dispatch(generation: dict[str, Any]) -> None:
     payload = {
         "prompt": str(request["prompt"]),
         "model": str(request["model"]),
-        "resolution": str(request["resolution"]),
+        "resolution": output_resolution(request["resolution"], request.get("aspect_ratio")),
         "duration": int(request["duration"]),
         "generate_audio": request.get("generate_audio", True),
     }
-    if request.get("aspect_ratio"):
-        payload["aspect_ratio"] = request["aspect_ratio"]
     if kind in {"image-to-video", "audio-to-video"}:
         source_image_id = request.get("source_image_id")
         if source_image_id:
@@ -187,8 +186,6 @@ async def _dispatch(generation: dict[str, Any]) -> None:
             if terminal:await _settle_terminal(terminal)
             return
         payload["audio_uri"] = await asyncio.to_thread(speech_assets.signed_url,audio["object_key"])
-        ratio=request.get("aspect_ratio") or "16:9"
-        payload["resolution"] = {"720p":{"16:9":"1280x720","9:16":"720x1280","1:1":"720x720"},"1080p":{"16:9":"1920x1080","9:16":"1080x1920","1:1":"1080x1080"}}[request["resolution"]][ratio]
         for field in ("duration","generate_audio","aspect_ratio"):payload.pop(field,None)
 
     # Validate local/private dependencies and mint any expiring source URL
