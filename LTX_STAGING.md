@@ -1,8 +1,9 @@
 # LTX staging setup
 
-Generation remains locked. Readiness on 30 October 2026 reports the LTX key
-missing, and Render has no generation worker. This document does not authorize
-paid resources or provider spend.
+Generation remains locked. The staging API detects an LTX key on 30 October
+2026. The documented Google Storage output host is configured; actual provider
+authentication and video delivery are not yet verified. Render has no generation
+worker. This document does not authorize paid resources or provider spend.
 
 ## Configuration
 
@@ -15,7 +16,9 @@ of Git and chat. The generation worker needs its own server environment:
 - `ALLOWED_MEDIA_HOSTS`: explicit provider output hosts verified against LTX's
   actual delivery configuration. Do not guess a broad CDN allowlist or disable
   URL validation. Staging rejects provider media downloads without this value.
-- The current worker entry point is `python generation_worker.py`.
+- The worker entry point is `python generation_worker.py`.
+- `NENE_GENERATION_WORKER_ENABLED=false` parks the worker without claiming jobs.
+  Enable it only after reviewing pending jobs and approving the paid test path.
 
 The API process does not run jobs. Provision a supervised background worker only
 after agreeing its recurring cost. Story assembly is a separate workload and
@@ -60,3 +63,22 @@ Official references:
 - https://docs.ltx.io/quickstart
 - https://docs.ltx.io/authentication
 - https://render.com/docs/deploys
+
+## Prepared worker Blueprint
+
+`render.ltx-worker.yaml` defines one worker, 0.5 CPU / 512 MB, in Oregon on
+the combined staging branch. It uses `fromService.envVarKey` references to the
+existing staging service; no secret is copied into this repository. It creates
+no database, cache or API service. Generation and Story assembly are separate
+workloads; this Blueprint does not run assembly.
+
+The Blueprint is prepared, not applied. Applying it creates recurring compute
+charges (currently listed at $7/month for this plan, plus any applicable usage
+and taxes). Schema validation cannot confirm workspace-specific references;
+review the Render plan/price and existing-service mappings before applying.
+The existing API environment stays managed through Render settings. Changing
+referenced values requires a Blueprint sync to refresh the worker copies.
+
+Keep both API generation creation and worker consumption disabled until the
+queue and provider test budget have been reviewed. Paystack test credits do not
+become live entitlements when a worker is added.
