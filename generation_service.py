@@ -95,7 +95,7 @@ async def create_reserved_generation(
         source_asset=None
         audio_asset=None
     else:
-        if provider != "ltx":
+        if provider not in {"ltx","magic-hour"}:
             raise ValueError("The durable worker currently supports the LTX provider only. Other providers remain disabled in this flow.")
         if (generation_type != "audio-to-video" and duration_seconds not in {6, 8, 10}) or (generation_type == "audio-to-video" and not 2 <= duration_seconds <= 10):
             raise ValueError("Duration must be one of the supported billable durations: 6, 8, or 10 seconds.")
@@ -119,9 +119,16 @@ async def create_reserved_generation(
     # resolution/duration and silently submit a different one.
     if not is_tts:
         quote = pricing_quote(provider, model, resolution, duration_seconds)
-        from ltx_contract import output_resolution
-        # Reject unsupported shapes before entering the credit transaction.
-        output_resolution(quote['resolution'], aspect_ratio)
+        if provider == 'magic-hour':
+            from magic_hour_video import validate
+            validate({'model':quote['model'],'resolution':quote['resolution'],'duration':duration_seconds,
+                      'aspect_ratio':aspect_ratio,'source_image_id':source_asset,'image_url':image_url,
+                      'generate_audio':generate_audio},generation_type)
+            if generation_type == 'image-to-video' and aspect_ratio:
+                raise ValueError('Backup image format must match the source image.')
+        else:
+            from ltx_contract import output_resolution
+            output_resolution(quote['resolution'], aspect_ratio)
     normalized = {
         "type": generation_type,
         "prompt": prompt,
@@ -196,6 +203,9 @@ async def create_reserved_generation(
 
             # A replay above returns the already accepted original job. A new
             # request may never reserve more than the reviewed spending limit.
+            if provider == 'magic-hour' and not is_tts:
+                from magic_hour_video import enabled
+                if not enabled():raise ValueError('Magic Hour video backup is not enabled yet.')
             if credit_limit is not None and amount > credit_limit:
                 raise GenerationPriceChanged("The price increased. Review the current price before generating; no credits were reserved.")
 

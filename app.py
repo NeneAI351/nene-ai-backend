@@ -773,7 +773,10 @@ def generation_availability():
     from readiness import readiness_snapshot
     checks = readiness_snapshot(production=True)["checks"]
     enabled = os.getenv("NENE_DURABLE_GENERATION_CREATE_ENABLED", "").strip().lower() == "true"
-    accepting = enabled and all(checks.values())
+    from provider_routing import provider_status
+    from readiness import _valid_media_host_allowlist
+    video_available = any(item['available'] for item in provider_status())
+    accepting = enabled and video_available and _valid_media_host_allowlist(os.getenv('ALLOWED_MEDIA_HOSTS','')) and all(value for key,value in checks.items() if key!='ltx_provider_configured')
     return {"accepting_requests": accepting, "configuration_only": True,
             "generate_audio_supported": True,
             "story_audio_supported": True,
@@ -820,9 +823,10 @@ async def create_generation_endpoint(
     # Fail closed before wallet reservation when the only durable worker adapter
     # is not configured. A queued job without a provider credential can strand
     # reserved credits and must never be accepted.
-    if (req.provider or "").strip().lower() != "ltx":
-        raise HTTPException(status_code=400, detail="The durable generation worker currently supports LTX only.")
-    if not os.getenv("LTX_API_KEY", "").strip():
+    selected_provider=(req.provider or '').strip().lower()
+    if selected_provider not in {"ltx","magic-hour"}:
+        raise HTTPException(status_code=400, detail="Choose a supported video provider.")
+    if selected_provider == 'ltx' and (not os.getenv("LTX_API_KEY", "").strip() or os.getenv('NENE_LTX_VIDEO_ENABLED','true').strip().lower() != 'true'):
         raise HTTPException(status_code=503, detail="LTX durable generation is not configured; no credits were reserved.")
     if req.type == "image-to-video":
         if _is_production_environment():

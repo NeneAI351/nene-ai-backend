@@ -20,9 +20,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     "magic-hour": {
         "label": "Magic Hour",
         "generation_types": ["text-to-video", "image-to-video"],
-        # Known provider, but its durable job submission/status/media adapter
-        # has not yet been implemented and verified in this backend.
-        "adapter_enabled": False,
+        # New jobs remain locked behind an explicit deployment flag and a
+        # configured account credit cost until real integration tests pass.
+        "adapter_enabled": True,
         "required_env": ["MAGIC_HOUR_API_KEY"],
         "strengths": ["creative video workflows"],
     },
@@ -48,6 +48,15 @@ def provider_status() -> list[dict[str, Any]]:
     result = []
     for key, item in PROVIDERS.items():
         configured = all(os.getenv(name, "").strip() for name in item["required_env"])
+        if key == 'magic-hour':
+            try:
+                from pricing import get_rate
+                configured = configured and get_rate('magic-hour','minimax-h3','720p') is not None
+            except ValueError:configured = False
+            from magic_hour_video import enabled as backup_enabled
+            configured = configured and backup_enabled()
+        if key == 'ltx':
+            configured = configured and os.getenv('NENE_LTX_VIDEO_ENABLED','true').strip().lower() == 'true'
         enabled = bool(item["adapter_enabled"] and configured)
         result.append({
             "id": key,
@@ -72,9 +81,8 @@ def select_provider(
 ) -> dict[str, Any]:
     """Choose only an adapter that is enabled and configured.
 
-    Auto currently chooses LTX when it is configured because it is the only
-    durable adapter implemented in this backend. This is intentionally honest:
-    adding provider names to the UI must never imply their adapters work.
+    Selection is PRE-submission only. An accepted or uncertain generation never
+    changes provider. Backup use still requires a fresh server quote/approval.
     """
     requested = _key(mode)
     if generation_type not in {"text-to-video", "image-to-video", "audio-to-video"}:
@@ -90,10 +98,12 @@ def select_provider(
         p = status[provider]
         if not p["available"] or generation_type not in p["generation_types"]:
             continue
+        if provider == 'magic-hour' and resolution not in {'720p','1080p'}:continue
         # Pricing must be calculated by the authoritative pricing module after
         # selection. Never trust a browser-provided credit quote.
         return {
             "provider": provider,
+            "model": 'minimax-h3' if provider == 'magic-hour' else 'ltx-2-5-fast',
             "label": p["label"],
             "mode": requested,
             "generation_type": generation_type,

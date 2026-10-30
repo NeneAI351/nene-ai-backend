@@ -212,3 +212,27 @@ async def test_reviewed_price_replay_never_queues_or_charges_again(generation_se
     assert replay['credits_reserved']==first['credits_reserved']
     assert (await database.fetch_one('SELECT COUNT(*) AS n FROM generation_outbox WHERE generation_id=%s',(first['generation_id'],)))['n']==1
 
+
+@pytest.mark.asyncio
+async def test_backup_reservation_replay_lock_and_price_limit(generation_service_db,monkeypatch):
+    monkeypatch.setenv('MAGIC_HOUR_API_KEY','test-not-real')
+    monkeypatch.setenv('NENE_MAGIC_HOUR_VIDEO_ENABLED','true')
+    monkeypatch.setenv('ALLOWED_MEDIA_HOSTS','videos.magichour.ai')
+    monkeypatch.setenv('NENE_MAGIC_HOUR_CREDIT_USD','0.0025')
+    user=await _user_with_credits('1000')
+    kwargs=dict(prompt='A bird above a river',provider='magic-hour',model='minimax-h3',resolution='720p',duration_seconds=6)
+    from pricing import quote
+    amount=Decimal(quote('magic-hour','minimax-h3','720p',6)['recommended_credits'])
+    with pytest.raises(generation_service.GenerationPriceChanged):
+        await generation_service.create_reserved_generation(user,'backup-low',credit_limit=amount-Decimal('0.01'),**kwargs)
+    first=await generation_service.create_reserved_generation(user,'backup-one',credit_limit=amount,**kwargs)
+    monkeypatch.setenv('NENE_MAGIC_HOUR_VIDEO_ENABLED','false')
+    replay=await generation_service.create_reserved_generation(user,'backup-one',credit_limit=amount,**kwargs)
+    assert replay['generation_id']==first['generation_id'] and replay['duplicate']
+    with pytest.raises(ValueError,match='not enabled'):
+        await generation_service.create_reserved_generation(user,'backup-locked',**kwargs)
+    row=await database.fetch_one('SELECT available_credits,reserved_credits FROM wallets WHERE user_id=%s',(user,))
+    assert Decimal(row['available_credits'])==Decimal('1000')-amount
+    assert Decimal(row['reserved_credits'])==amount
+    count=await database.fetch_one('SELECT COUNT(*) AS n FROM generation_outbox WHERE generation_id=%s',(first['generation_id'],))
+    assert count['n']==1
