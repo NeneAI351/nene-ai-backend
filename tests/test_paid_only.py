@@ -44,7 +44,8 @@ async def test_director_never_calls_provider_without_positive_price(monkeypatch,
 
 def test_checkout_requires_no_repeat_policy_acceptance():
     request=payments.CheckoutRequest(email="buyer@example.test",package_id="starter")
-    assert request.model_dump()=={"email":"buyer@example.test","package_id":"starter"}
+    assert request.expected_mode is None
+    assert request.model_dump(exclude_none=True)=={"email":"buyer@example.test","package_id":"starter"}
     assert 'accepted_policy_version' not in payments.CheckoutRequest.model_fields
 
 @pytest.mark.asyncio
