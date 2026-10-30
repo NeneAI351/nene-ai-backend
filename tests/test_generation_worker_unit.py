@@ -225,3 +225,64 @@ async def test_cost_persistence_failure_schedules_outbox_retry(monkeypatch):
     assert kwargs["delay_seconds"] == 2
     assert kwargs["max_attempts"] == 12
     assert kwargs["lease_token"] == "00000000-0000-4000-8000-000000000004"
+
+
+@pytest.mark.asyncio
+async def test_active_event_renews_lease_until_processing_finishes(monkeypatch):
+    event={'id':'event','generation_id':'generation','lease_token':'token'}
+    renewed=asyncio.Event();calls=[]
+    async def renew(*args):
+        calls.append(args)
+        if len(calls)>=3:renewed.set()
+    async def process(*args):await asyncio.wait_for(renewed.wait(),timeout=1)
+    monkeypatch.setattr(generation_worker.generation_outbox,'renew_event',renew)
+    monkeypatch.setattr(generation_worker,'process_event',process)
+    await generation_worker.process_leased_event(event,'worker',heartbeat_seconds=.001)
+    assert len(calls)>=3
+    assert all(call==('event','worker','token') for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_lost_lease_cancels_active_processing_without_resubmission(monkeypatch):
+    event={'id':'event','generation_id':'generation','lease_token':'token'}
+    started=asyncio.Event();cancelled=asyncio.Event();calls=[]
+    async def renew(*args):
+        calls.append(args)
+        if len(calls)>1:
+            await started.wait()
+            raise generation_worker.generation_outbox.OutboxConflict('replaced')
+    async def process(*args):
+        started.set()
+        try:await asyncio.Event().wait()
+        finally:cancelled.set()
+    monkeypatch.setattr(generation_worker.generation_outbox,'renew_event',renew)
+    monkeypatch.setattr(generation_worker,'process_event',process)
+    with pytest.raises(generation_worker.generation_outbox.OutboxConflict):
+        await generation_worker.process_leased_event(event,'worker',heartbeat_seconds=.001)
+    assert cancelled.is_set()
+    assert len(calls)==2
+
+
+@pytest.mark.asyncio
+async def test_invalid_initial_lease_never_starts_provider_processing(monkeypatch):
+    from unittest.mock import AsyncMock
+    process=AsyncMock()
+    monkeypatch.setattr(generation_worker,'process_event',process)
+    monkeypatch.setattr(generation_worker.generation_outbox,'renew_event',AsyncMock(side_effect=generation_worker.generation_outbox.OutboxConflict('expired')))
+    with pytest.raises(generation_worker.generation_outbox.OutboxConflict):
+        await generation_worker.process_leased_event({'id':'event','lease_token':'token'},'worker')
+    process.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_finishes_claimed_event_without_claiming_more_jobs(monkeypatch):
+    stop=asyncio.Event();claims=[];processed=[]
+    async def claim(worker,**kwargs):
+        claims.append(kwargs);return [{'id':'current'}]
+    async def process(event,worker):
+        stop.set();processed.append(event['id'])
+    monkeypatch.setattr(generation_worker.generation_outbox,'claim_events',claim)
+    monkeypatch.setattr(generation_worker,'process_leased_event',process)
+    await generation_worker.consume_events('worker',stop)
+    assert claims==[{'limit':1,'lease_seconds':120}]
+    assert processed==['current']

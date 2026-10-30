@@ -110,3 +110,28 @@ async def test_retry_requires_current_lease_and_dead_letters_at_limit(postgres_o
         assert row["state"] == "dead"
         assert row["lease_token"] is None
         assert row["last_error_code"] == "provider_timeout"
+
+
+@pytest.mark.asyncio
+async def test_lease_heartbeat_extends_only_current_unexpired_claim(postgres_outbox):
+    generation_id=await _generation()
+    event_id=await generation_outbox.enqueue_generation_event(generation_id)
+    events=await generation_outbox.claim_events('heartbeat-owner',limit=100,lease_seconds=120)
+    event=next(item for item in events if item['id']==event_id)
+    await generation_outbox.renew_event(event_id,'heartbeat-owner',event['lease_token'],lease_seconds=300)
+    row=await database.fetch_one('SELECT lease_expires_at,attempts FROM generation_outbox WHERE id=%s',(event_id,))
+    assert row['lease_expires_at']>event['lease_expires_at']
+    assert row['attempts']==1
+    with pytest.raises(generation_outbox.OutboxConflict):
+        await generation_outbox.renew_event(event_id,'another-worker',event['lease_token'])
+    with pytest.raises(generation_outbox.OutboxConflict):
+        await generation_outbox.renew_event(event_id,'heartbeat-owner',str(uuid.uuid4()))
+    await database.execute("UPDATE generation_outbox SET lease_expires_at=NOW()-INTERVAL '1 second' WHERE id=%s",(event_id,))
+    with pytest.raises(generation_outbox.OutboxConflict):
+        await generation_outbox.renew_event(event_id,'heartbeat-owner',event['lease_token'])
+    reclaimed=next(item for item in await generation_outbox.claim_events('new-owner',limit=100,lease_seconds=120) if item['id']==event_id)
+    with pytest.raises(generation_outbox.OutboxConflict):
+        await generation_outbox.renew_event(event_id,'heartbeat-owner',event['lease_token'])
+    await generation_outbox.complete_event(event_id,'new-owner',reclaimed['lease_token'])
+    with pytest.raises(generation_outbox.OutboxConflict):
+        await generation_outbox.renew_event(event_id,'new-owner',reclaimed['lease_token'])

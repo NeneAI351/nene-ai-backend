@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import signal
 import socket
 import tempfile
 import uuid
@@ -404,6 +405,46 @@ async def process_event(event: dict[str, Any], worker_id: str) -> None:
     async with account_privacy.worker_guard(row.get('user_id')) as active:
         if active:await _process_event_unlocked(event,worker_id)
 
+
+async def process_leased_event(event: dict[str, Any], worker_id: str, heartbeat_seconds: float = 30) -> None:
+    """Keep a single active claim alive and stop work if lease renewal fails."""
+    if not 0 < heartbeat_seconds < 120:
+        raise ValueError("Heartbeat must run before the lease expires.")
+    await generation_outbox.renew_event(event['id'],worker_id,event['lease_token'])
+    async def heartbeat():
+        while True:
+            await asyncio.sleep(heartbeat_seconds)
+            await generation_outbox.renew_event(event['id'],worker_id,event['lease_token'])
+    work = asyncio.create_task(process_event(event,worker_id))
+    pulse = asyncio.create_task(heartbeat())
+    try:
+        done, _ = await asyncio.wait({work,pulse},return_when=asyncio.FIRST_COMPLETED)
+        # Completion can clear the lease at the same instant as a heartbeat.
+        if work in done:
+            await work
+        else:
+            await pulse
+    finally:
+        for task in (work,pulse):
+            if not task.done():task.cancel()
+        await asyncio.gather(work,pulse,return_exceptions=True)
+
+
+async def consume_events(worker_id: str, stop: asyncio.Event) -> None:
+    while not stop.is_set():
+        # Do not pre-claim jobs that will sit idle behind a slow provider call.
+        events = await generation_outbox.claim_events(worker_id,limit=1,lease_seconds=120)
+        if not events:
+            try:await asyncio.wait_for(stop.wait(),timeout=1.5)
+            except asyncio.TimeoutError:pass
+            continue
+        try:
+            await process_leased_event(events[0],worker_id)
+        except Exception:
+            # The durable generation state handles ambiguous submissions on
+            # reclaim. Do not resubmit or release reserved credits here.
+            logger.error("Generation lease processing stopped (event=%s)",events[0]['id'])
+
 async def run_worker() -> None:
     if not database.database_configured():
         raise RuntimeError("DATABASE_URL must be configured for the generation worker.")
@@ -417,15 +458,16 @@ async def run_worker() -> None:
     await account_privacy.initialize_schema()
     worker_id = f"{socket.gethostname()}-{uuid.uuid4()}"
     logger.info("Generation worker started with id %s", worker_id)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    registered = []
     try:
-        while True:
-            events = await generation_outbox.claim_events(worker_id, limit=10, lease_seconds=120)
-            if not events:
-                await asyncio.sleep(1.5)
-                continue
-            for event in events:
-                await process_event(event, worker_id)
+        for sig in (signal.SIGTERM,signal.SIGINT):
+            loop.add_signal_handler(sig,stop.set)
+            registered.append(sig)
+        await consume_events(worker_id,stop)
     finally:
+        for sig in registered:loop.remove_signal_handler(sig)
         await database.close_database()
 
 
