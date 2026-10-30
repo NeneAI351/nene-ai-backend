@@ -177,3 +177,16 @@ async def test_verification_rejects_provider_reference_mismatch_before_fulfillme
         await payments.verify_checkout(payments.VerifyRequest(reference=requested), "owner")
     assert exc.value.status_code == 502
     fulfill.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_test_checkout_refuses_server_switch_to_live_before_any_provider_request(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(payments, '_require_database', AsyncMock())
+    monkeypatch.setenv('PAYSTACK_MODE', 'live')
+    provider = AsyncMock()
+    monkeypatch.setattr(payments.httpx, 'AsyncClient', provider)
+    with pytest.raises(HTTPException) as error:
+        await payments.create_checkout(payments.CheckoutRequest(package_id='starter', email='buyer@example.test', expected_mode='test'), 'owner')
+    assert error.value.status_code == 409
+    provider.assert_not_called()

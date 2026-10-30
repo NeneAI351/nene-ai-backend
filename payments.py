@@ -13,7 +13,7 @@ import os
 import re
 import uuid
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
@@ -133,6 +133,7 @@ class CheckoutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     package_id: str = Field(min_length=1, max_length=40)
     email: str = Field(min_length=5, max_length=254)
+    expected_mode: Literal["test", "live"] | None = None
 
 
 class VerifyRequest(BaseModel):
@@ -314,6 +315,8 @@ async def list_credit_packages():
 @router.post("/checkout")
 async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authenticated_user_id)):
     await _require_database()
+    if req.expected_mode is not None and req.expected_mode != payment_mode():
+        raise HTTPException(status_code=409, detail="Payment mode changed. Refresh before starting checkout.")
     _test_mode_only()
     if not is_valid_checkout_email(req.email):
         raise HTTPException(status_code=400, detail="Enter a valid email address for the payment receipt.")
