@@ -123,6 +123,30 @@ async def complete_event(event_id: str, worker_id: str, lease_token: str) -> Non
     await _update_leased_event(event_id, worker_id, lease_token)
 
 
+async def renew_event(event_id: str, worker_id: str, lease_token: str, lease_seconds: int = 120) -> None:
+    """Extend a current, unexpired lease; never resurrect a lost claim."""
+    worker = (worker_id or "").strip()
+    if not worker or len(worker) > 200 or not 10 <= lease_seconds <= 900:
+        raise ValueError("Invalid worker or lease duration.")
+    try:
+        event_uuid, token_uuid = str(uuid.UUID(event_id)), str(uuid.UUID(lease_token))
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise ValueError("Invalid event or lease token.") from exc
+    if database._pool is None:
+        raise RuntimeError("Durable outbox storage is required.")
+    async with database._pool.connection() as conn:
+        async with conn.transaction():
+            row = await (await conn.execute(
+                """UPDATE generation_outbox
+                   SET lease_expires_at=NOW()+(%s * INTERVAL '1 second'),updated_at=NOW()
+                   WHERE id=%s AND state='processing' AND lease_owner=%s AND lease_token=%s
+                     AND lease_expires_at > NOW() RETURNING id""",
+                (lease_seconds,event_uuid,worker,token_uuid),
+            )).fetchone()
+            if not row:
+                raise OutboxConflict("Cannot renew an expired or replaced lease.")
+
+
 async def retry_event(
     event_id: str,
     worker_id: str,
