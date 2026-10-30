@@ -14,6 +14,7 @@ import re
 import uuid
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -46,6 +47,19 @@ def is_valid_webhook_signature(secret: str, raw_body: bytes, signature: str) -> 
 def is_valid_checkout_email(email: str) -> bool:
     """Reject whitespace and malformed address separators before checkout."""
     return bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", (email or "").strip()))
+
+
+def is_valid_checkout_url(value: Any) -> bool:
+    """Only hand the customer an HTTPS checkout on Paystack's exact host."""
+    if not isinstance(value, str) or any(c.isspace() or ord(c) < 32 for c in value):
+        return False
+    try:
+        url = urlsplit(value)
+        return (url.scheme == "https" and url.hostname == "checkout.paystack.com"
+                and url.port in (None, 443) and not url.username and not url.password
+                and bool(url.path.strip("/")) and "\\" not in value)
+    except ValueError:
+        return False
 
 
 def payment_mode() -> str:
@@ -337,12 +351,12 @@ async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authe
             )
         raise HTTPException(status_code=502, detail="Could not initialize checkout; no credits were added.")
     data = payload.get("data") if isinstance(payload, dict) and payload.get("status") is True else None
-    if not isinstance(data, dict) or not data.get("authorization_url"):
+    if not isinstance(data, dict) or not is_valid_checkout_url(data.get("authorization_url")):
         raise HTTPException(status_code=502, detail="Payment provider returned an invalid checkout response.")
     async with database._pool.connection() as conn:
         await conn.execute(
             """UPDATE payment_orders SET status='pending',authorization_url=%s,access_code=%s,updated_at=NOW()
-               WHERE reference=%s""",
+               WHERE reference=%s AND status='initialized'""",
             (data["authorization_url"], data.get("access_code"), reference),
         )
     return {"ok": True, "reference": reference, "authorization_url": data["authorization_url"],
@@ -361,6 +375,8 @@ async def verify_checkout(req: VerifyRequest, user_id: str = Depends(get_authent
     if not row:
         raise HTTPException(status_code=404, detail="Payment order was not found for this account.")
     transaction = await _paystack_get(req.reference)
+    if transaction.get("reference") != req.reference:
+        raise HTTPException(status_code=502, detail="Payment provider returned a different payment reference.")
     # Enforce order ownership through the authenticated lookup above; fulfilment
     # still independently checks the exact reference, amount, currency and state.
     return await _fulfill_verified_transaction(transaction)

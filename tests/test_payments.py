@@ -145,3 +145,35 @@ async def test_webhook_obeys_live_payment_launch_gate(monkeypatch):
         await payments.paystack_webhook(FakeRequest(), "")
     assert exc.value.status_code == 503
     assert "locked" in str(exc.value.detail).lower()
+
+
+@pytest.mark.parametrize("url", [
+    "https://checkout.paystack.com/token", "https://checkout.paystack.com:443/token",
+])
+def test_checkout_url_accepts_paystack_https_only(url):
+    assert payments.is_valid_checkout_url(url)
+
+
+@pytest.mark.parametrize("url", [
+    None, {}, "https://evil.test/token", "https://checkout.paystack.com.evil.test/token",
+    "http://checkout.paystack.com/token", "https://checkout.paystack.com/",
+    "https://buyer:secret@checkout.paystack.com/token", "https://checkout.paystack.com:80/token",
+    "https://checkout.paystack.com:invalid/token", "https://checkout.paystack.com/token\n",
+])
+def test_checkout_url_rejects_untrusted_or_malformed_links(url):
+    assert not payments.is_valid_checkout_url(url)
+
+
+@pytest.mark.asyncio
+async def test_verification_rejects_provider_reference_mismatch_before_fulfillment(monkeypatch):
+    from unittest.mock import AsyncMock
+    requested = "nene_" + "a" * 32
+    monkeypatch.setattr(payments, "_require_database", AsyncMock())
+    monkeypatch.setattr(payments.database, "fetch_one", AsyncMock(return_value={"reference": requested}))
+    monkeypatch.setattr(payments, "_paystack_get", AsyncMock(return_value=_valid_transaction(reference="nene_" + "b" * 32)))
+    fulfill = AsyncMock()
+    monkeypatch.setattr(payments, "_fulfill_verified_transaction", fulfill)
+    with pytest.raises(HTTPException) as exc:
+        await payments.verify_checkout(payments.VerifyRequest(reference=requested), "owner")
+    assert exc.value.status_code == 502
+    fulfill.assert_not_awaited()
