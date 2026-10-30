@@ -24,8 +24,14 @@ async def check_database():
         if not await database.database_ping():
             return False
         # Verify the API has initialized the schemas without creating them here.
-        names = ["users", "wallets", "generations", "generation_outbox",
-                 "media_assets", "story_projects", "story_assembly_jobs"]
+        names = ["users", "wallets", "wallet_reservations", "wallet_operations",
+                 "payment_orders", "account_agreements", "account_profiles",
+                 "support_reports", "generations", "generation_outbox",
+                 "media_assets", "speech_assets", "director_plans",
+                 "story_projects", "story_scenes", "story_assembly_jobs",
+                 "privacy_deleted_subjects", "privacy_deletions",
+                 "privacy_provider_erasure", "privacy_payment_archive",
+                 "privacy_enquiries", "editor_export_receipts"]
         for name in names:
             row = await database.fetch_one("SELECT to_regclass(%s)::text AS name", (name,))
             if not row or not row["name"]:
