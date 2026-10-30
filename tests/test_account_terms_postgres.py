@@ -71,3 +71,35 @@ async def test_paid_features_block_incomplete_account_setup(account_db,monkeypat
     with pytest.raises(HTTPException) as error:
         await generation_service.create_reserved_generation(user,'setup-required',prompt='A city at sunrise',provider='ltx',model='ltx-2-5-fast',resolution='720p',duration_seconds=6)
     assert error.value.status_code==403
+
+
+@pytest.mark.asyncio
+async def test_checkout_response_cannot_overwrite_early_success_webhook(account_db, monkeypatch):
+    user, _ = account_db
+    await record_agreement(user)
+    monkeypatch.setenv('PAYSTACK_MODE', 'test')
+    monkeypatch.setenv('PAYSTACK_SECRET_KEY', 'sk_test_fixture')
+    class Response:
+        def raise_for_status(self): pass
+        def json(self):
+            return {'status': True, 'data': {'authorization_url': 'https://checkout.paystack.com/fixture'}}
+    class Provider:
+        def __init__(self, **kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): pass
+        async def post(self, *args, **kwargs):
+            reference = kwargs['json']['reference']
+            # Simulate a success webhook committed while initialize is in flight.
+            await payments._fulfill_verified_transaction({
+                'reference': reference, 'domain': 'test', 'status': 'success',
+                'id': 876543210, 'amount': 500000, 'currency': 'NGN',
+            })
+            return Response()
+    monkeypatch.setattr(payments.httpx, 'AsyncClient', Provider)
+    result = await payments.create_checkout(payments.CheckoutRequest(package_id='starter', email='buyer@example.test'), user)
+    order = await database.fetch_one('SELECT status FROM payment_orders WHERE reference=%s', (result['reference'],))
+    assert order['status'] == 'success'
+    wallet = await database.fetch_one('SELECT available_credits FROM wallets WHERE user_id=%s', (user,))
+    assert wallet['available_credits'] == 400
+    ledger = await database.fetch_one("SELECT count(*) AS n FROM credit_ledger WHERE user_id=%s AND entry_type='purchase'", (user,))
+    assert ledger['n'] == 1
