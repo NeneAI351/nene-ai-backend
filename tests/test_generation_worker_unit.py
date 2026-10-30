@@ -276,6 +276,7 @@ async def test_invalid_initial_lease_never_starts_provider_processing(monkeypatc
 
 @pytest.mark.asyncio
 async def test_shutdown_finishes_claimed_event_without_claiming_more_jobs(monkeypatch):
+    monkeypatch.setenv('NENE_GENERATION_WORKER_ENABLED','true')
     stop=asyncio.Event();claims=[];processed=[]
     async def claim(worker,**kwargs):
         claims.append(kwargs);return [{'id':'current'}]
@@ -286,3 +287,14 @@ async def test_shutdown_finishes_claimed_event_without_claiming_more_jobs(monkey
     await generation_worker.consume_events('worker',stop)
     assert claims==[{'limit':1,'lease_seconds':120}]
     assert processed==['current']
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_claim_jobs_until_explicitly_enabled(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.delenv('NENE_GENERATION_WORKER_ENABLED',raising=False)
+    claim=AsyncMock();monkeypatch.setattr(generation_worker.generation_outbox,'claim_events',claim)
+    stop=asyncio.Event()
+    asyncio.get_running_loop().call_soon(stop.set)
+    await generation_worker.consume_events('worker',stop)
+    claim.assert_not_awaited()

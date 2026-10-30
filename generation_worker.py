@@ -432,6 +432,11 @@ async def process_leased_event(event: dict[str, Any], worker_id: str, heartbeat_
 
 async def consume_events(worker_id: str, stop: asyncio.Event) -> None:
     while not stop.is_set():
+        # Provisioning a worker must not automatically buy old queued work.
+        if os.getenv('NENE_GENERATION_WORKER_ENABLED','').strip().lower() != 'true':
+            try:await asyncio.wait_for(stop.wait(),timeout=1.5)
+            except asyncio.TimeoutError:pass
+            continue
         # Do not pre-claim jobs that will sit idle behind a slow provider call.
         events = await generation_outbox.claim_events(worker_id,limit=1,lease_seconds=120)
         if not events:
