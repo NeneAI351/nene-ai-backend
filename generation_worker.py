@@ -127,6 +127,10 @@ async def _dispatch(generation: dict[str, Any]) -> None:
         import speech_synthesis
         await speech_synthesis.dispatch(generation)
         return
+    if generation['provider'] == 'magic-hour':
+        import magic_hour_video
+        await magic_hour_video.dispatch(generation)
+        return
     if generation["provider"] != "ltx":
         raise RuntimeError("provider_adapter_not_enabled")
     base, headers = _provider_config()
@@ -214,7 +218,7 @@ async def _dispatch(generation: dict[str, Any]) -> None:
         logger.exception("Unexpected LTX submission outcome for generation %s", generation_id)
         return
 
-    if response.status_code >= 500:
+    if response.status_code >= 500 or response.status_code in {408,409}:
         # A server error can occur after provider-side acceptance. Treat as unknown.
         await generation_store.mark_submission_unknown(owner, generation_id)
         await generation_outbox.enqueue_generation_event(
@@ -283,6 +287,9 @@ async def _reconcile(generation: dict[str, Any]) -> int:
     if generation["provider"] == "magic-hour" and generation["generation_type"] == "text-to-speech":
         import speech_synthesis
         return await speech_synthesis.reconcile(generation)
+    if generation['provider'] == 'magic-hour':
+        import magic_hour_video
+        return await magic_hour_video.reconcile(generation)
     if generation["provider"] != "ltx":
         raise RuntimeError("provider_adapter_not_enabled")
 

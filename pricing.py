@@ -82,7 +82,7 @@ def _norm_resolution(value: str) -> str:
 def _norm_model(provider: str, model: str) -> str:
     m = (model or "").lower().strip()
     if provider == "magic-hour":
-        return "ltx-2.5"
+        return "ltx-2.5" if m in {"ltx", "ltx-2.5", "ltx-2-5", "ltx-2-5-fast"} else m
     if provider == "pixazo" and m in {"ltx","ltx-2.5","ltx-2-5","ltx-2-5-fast"}:
         return "ltx-2-5-lite"
     if provider == "ltx" and m in {"ltx","ltx-2.5","ltx-2-5"}:
@@ -93,6 +93,14 @@ def get_rate(provider: str, model: str, resolution: str) -> dict[str, Any] | Non
     p = (provider or "").lower().strip()
     m = _norm_model(p, model)
     r = _norm_resolution(resolution)
+    if p == 'magic-hour' and m == 'minimax-h3':
+        if r not in {'720p','1080p'}:return None
+        try:unit=float(os.getenv('NENE_MAGIC_HOUR_CREDIT_USD',''))
+        except ValueError:raise ValueError('Magic Hour account credit cost is not configured.')
+        if not math.isfinite(unit) or not 0 < unit <= 1:
+            raise ValueError('Magic Hour account credit cost must be positive and finite.')
+        return {'provider':p,'model':m,'resolution':r,'usd_per_second':unit * (48 if r=='720p' else 72),
+                'basis':'configured_account_credit_cost','estimated':True}
     for row in RATES:
         if row["provider"] == p and row["model"] == m and row["resolution"] == r:
             return dict(row)
