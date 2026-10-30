@@ -119,6 +119,9 @@ async def create_reserved_generation(
     # resolution/duration and silently submit a different one.
     if not is_tts:
         quote = pricing_quote(provider, model, resolution, duration_seconds)
+        from ltx_contract import output_resolution
+        # Reject unsupported shapes before entering the credit transaction.
+        output_resolution(quote['resolution'], aspect_ratio)
     normalized = {
         "type": generation_type,
         "prompt": prompt,
