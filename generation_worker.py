@@ -474,13 +474,14 @@ async def run_worker() -> None:
         if not database.database_configured():
             raise RuntimeError("DATABASE_URL must be configured for the generation worker.")
         await database.start_database()
-        await database.initialize_schema()
-        from wallet_store import initialize_wallet_schema
-        await initialize_wallet_schema()
-        await generation_outbox.initialize_outbox_schema()
-        await speech_assets.initialize_schema()
-        import account_privacy
-        await account_privacy.initialize_schema()
+        if os.getenv('NENE_DATABASE_MIGRATIONS_ENABLED', 'true').strip().lower() == 'true':
+            await database.initialize_schema()
+            from wallet_store import initialize_wallet_schema
+            await initialize_wallet_schema()
+            await generation_outbox.initialize_outbox_schema()
+            await speech_assets.initialize_schema()
+            import account_privacy
+            await account_privacy.initialize_schema()
         worker_id = f"{socket.gethostname()}-{uuid.uuid4()}"
         logger.info("Generation worker started with id %s", worker_id)
         await consume_events(worker_id, stop)
