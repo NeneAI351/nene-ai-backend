@@ -458,28 +458,35 @@ async def consume_events(worker_id: str, stop: asyncio.Event) -> None:
             logger.error("Generation lease processing stopped (event=%s)",events[0]['id'])
 
 async def run_worker() -> None:
-    if not database.database_configured():
-        raise RuntimeError("DATABASE_URL must be configured for the generation worker.")
-    await database.start_database()
-    await database.initialize_schema()
-    from wallet_store import initialize_wallet_schema
-    await initialize_wallet_schema()
-    await generation_outbox.initialize_outbox_schema()
-    await speech_assets.initialize_schema()
-    import account_privacy
-    await account_privacy.initialize_schema()
-    worker_id = f"{socket.gethostname()}-{uuid.uuid4()}"
-    logger.info("Generation worker started with id %s", worker_id)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     registered = []
     try:
-        for sig in (signal.SIGTERM,signal.SIGINT):
-            loop.add_signal_handler(sig,stop.set)
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, stop.set)
             registered.append(sig)
-        await consume_events(worker_id,stop)
+        # A provisioned but disabled worker needs no credentials or database.
+        # Environment changes require a Render deploy before processing starts.
+        if os.getenv('NENE_GENERATION_WORKER_ENABLED', '').strip().lower() != 'true':
+            logger.info("Generation worker paused; no database connection or job processing.")
+            await stop.wait()
+            return
+        if not database.database_configured():
+            raise RuntimeError("DATABASE_URL must be configured for the generation worker.")
+        await database.start_database()
+        await database.initialize_schema()
+        from wallet_store import initialize_wallet_schema
+        await initialize_wallet_schema()
+        await generation_outbox.initialize_outbox_schema()
+        await speech_assets.initialize_schema()
+        import account_privacy
+        await account_privacy.initialize_schema()
+        worker_id = f"{socket.gethostname()}-{uuid.uuid4()}"
+        logger.info("Generation worker started with id %s", worker_id)
+        await consume_events(worker_id, stop)
     finally:
-        for sig in registered:loop.remove_signal_handler(sig)
+        for sig in registered:
+            loop.remove_signal_handler(sig)
         await database.close_database()
 
 

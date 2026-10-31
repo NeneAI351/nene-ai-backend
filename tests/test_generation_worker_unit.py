@@ -298,3 +298,41 @@ async def test_worker_does_not_claim_jobs_until_explicitly_enabled(monkeypatch):
     asyncio.get_running_loop().call_soon(stop.set)
     await generation_worker.consume_events('worker',stop)
     claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_disabled_worker_starts_without_database_and_exits_on_sigterm():
+    import os
+    import sys
+    import signal
+    environment = dict(os.environ, NENE_GENERATION_WORKER_ENABLED='false', DATABASE_URL='')
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, '-u', 'generation_worker.py', env=environment,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    try:
+        line = await asyncio.wait_for(process.stdout.readline(), timeout=15)
+        assert b'Generation worker paused' in line
+        assert process.returncode is None
+        process.send_signal(signal.SIGTERM)
+        assert await asyncio.wait_for(process.wait(), timeout=5) == 0
+        assert b'Traceback' not in await process.stdout.read()
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+
+
+@pytest.mark.asyncio
+async def test_enabled_worker_requires_database_before_any_job_claim(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setenv('NENE_GENERATION_WORKER_ENABLED', 'true')
+    monkeypatch.setattr(generation_worker.database, 'database_configured', lambda: False)
+    start = AsyncMock()
+    claim = AsyncMock()
+    monkeypatch.setattr(generation_worker.database, 'start_database', start)
+    monkeypatch.setattr(generation_worker.database, 'close_database', AsyncMock())
+    monkeypatch.setattr(generation_worker.generation_outbox, 'claim_events', claim)
+    with pytest.raises(RuntimeError, match='DATABASE_URL must be configured'):
+        await generation_worker.run_worker()
+    start.assert_not_awaited()
+    claim.assert_not_awaited()
