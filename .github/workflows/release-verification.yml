@@ -3,7 +3,7 @@ name: Combined release verification
 on:
   pull_request:
   push:
-    branches: ["verify/android-readiness-20261023"]
+    branches: [main, "verify/android-readiness-20261023"]
 
 jobs:
   backend-postgres:
