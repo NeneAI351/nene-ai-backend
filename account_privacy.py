@@ -73,9 +73,16 @@ async def direct_auth_available():
 def auth_admin_config():
     issuer=os.getenv('AUTH_ISSUER','').rstrip('/')
     parsed=urlparse(issuer)
-    key=os.getenv('SUPABASE_SERVICE_ROLE_KEY','').strip()
+    key=os.getenv('SUPABASE_SECRET_KEY','').strip() or os.getenv('SUPABASE_SERVICE_ROLE_KEY','').strip()
     if not key or parsed.scheme!='https' or not parsed.hostname or not parsed.hostname.endswith('.supabase.co') or parsed.path!='/auth/v1' or parsed.port not in (None,443) or parsed.username or parsed.password:return None
     return issuer,key
+
+def auth_admin_headers(key):
+    # Current opaque keys belong in apikey, not a JWT Authorization header.
+    # Preserve the documented legacy service-role JWT request format.
+    headers={'apikey':key}
+    if not key.startswith('sb_secret_'):headers['Authorization']='Bearer '+key
+    return headers
 
 async def capabilities():
     if database._pool is None:return {'account_deletion_available':False,'privacy_requests_available':False}
@@ -257,7 +264,7 @@ async def delete_identity(owner):
     if not config:raise RuntimeError('identity_deletion_not_configured')
     base,key=config
     async with httpx.AsyncClient(timeout=30,follow_redirects=False,trust_env=False) as client:
-        response=await client.delete(base+'/admin/users/'+str(uuid.UUID(owner)),headers={'Authorization':'Bearer '+key,'apikey':key})
+        response=await client.delete(base+'/admin/users/'+str(uuid.UUID(owner)),headers=auth_admin_headers(key))
     if response.status_code not in {200,204,404}:raise RuntimeError('identity_deletion_unconfirmed')
 
 async def erase_provider(task):
