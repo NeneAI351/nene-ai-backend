@@ -70,6 +70,16 @@ def paystack_secret() -> str:
     return os.getenv("PAYSTACK_SECRET_KEY", "").strip()
 
 
+def live_checkout_enabled() -> bool:
+    """New sales require both release approval and an enabled generation path.
+
+    This gate does not block reconciliation of an existing payment order.
+    """
+    return (payment_mode() == "live"
+            and os.getenv("PAYSTACK_LIVE_PAYMENTS_APPROVED", "").lower() == "true"
+            and os.getenv("NENE_DURABLE_GENERATION_CREATE_ENABLED", "").strip().lower() == "true")
+
+
 def _test_mode_only() -> None:
     mode = payment_mode()
     secret = paystack_secret()
@@ -308,8 +318,7 @@ async def list_credit_packages():
                           "amount_ngn": value["amount_kobo"] // 100,
                           "credits": str(value["credits"])}
                          for key, value in PACKAGES.items()],
-            "live_payments_enabled": payment_mode() == "live"
-                and os.getenv("PAYSTACK_LIVE_PAYMENTS_APPROVED", "").lower() == "true"}
+            "live_payments_enabled": live_checkout_enabled()}
 
 
 @router.post("/checkout")
@@ -318,6 +327,8 @@ async def create_checkout(req: CheckoutRequest, user_id: str = Depends(get_authe
     if req.expected_mode is not None and req.expected_mode != payment_mode():
         raise HTTPException(status_code=409, detail="Payment mode changed. Refresh before starting checkout.")
     _test_mode_only()
+    if payment_mode() == "live" and not live_checkout_enabled():
+        raise HTTPException(status_code=503, detail="New credit purchases are closed while video generation is prepared. No payment has been started.")
     if not is_valid_checkout_email(req.email):
         raise HTTPException(status_code=400, detail="Enter a valid email address for the payment receipt.")
     package = PACKAGES.get(req.package_id)
