@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ConfigDict
 
 import database
+import credit_confirmations
 from billing_policy import POLICY_VERSION, REFUND_POLICY
 from account_agreement_store import require_account_agreement
 from auth import get_authenticated_user_id
@@ -137,6 +138,8 @@ async def initialize_payment_schema() -> None:
                     ON payment_orders(provider, provider_transaction_id)
                     WHERE provider_transaction_id IS NOT NULL;
             """)
+
+            await conn.execute(credit_confirmations.SCHEMA)
 
 
 class CheckoutRequest(BaseModel):
@@ -298,6 +301,7 @@ async def _fulfill_verified_transaction(transaction: dict[str, Any]) -> dict[str
                    paid_at=NOW(),updated_at=NOW() WHERE id=%s""",
                 (str(tx_id), order["id"]),
             )
+            await credit_confirmations.enqueue(conn, order, transaction, reference)
             return {"ok": True, "credited": True, "duplicate": False,
                     "reference": reference, "credits_added": str(credits),
                     "available_credits": str(new_balance)}
