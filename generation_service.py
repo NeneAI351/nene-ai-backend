@@ -212,7 +212,7 @@ async def create_reserved_generation(
                 raise GenerationEngineUnavailable()
             if provider == 'magic-hour' and not is_tts:
                 from magic_hour_video import enabled
-                if not enabled():raise GenerationEngineUnavailable()
+                if not enabled():raise ValueError('Magic Hour video backup is not enabled yet.')
             if credit_limit is not None and amount > credit_limit:
                 raise GenerationPriceChanged("The price increased. Review the current price before generating; no credits were reserved.")
 
