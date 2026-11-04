@@ -257,11 +257,12 @@ def purge_private_prefixes(owner,manifest):
             if result.get('Errors'):raise RuntimeError('private_media_delete_incomplete')
 
 async def delete_identity(owner):
-    if await direct_auth_available():
-        # Supabase documents direct auth.users deletion; never alter auth schema.
-        await database.execute('DELETE FROM auth.users WHERE id=%s',(owner,));return
     config=auth_admin_config()
-    if not config:raise RuntimeError('identity_deletion_not_configured')
+    if not config:
+        if await direct_auth_available():
+            # Supabase documents direct auth.users deletion; never alter auth schema.
+            await database.execute('DELETE FROM auth.users WHERE id=%s',(owner,));return
+        raise RuntimeError('identity_deletion_not_configured')
     base,key=config
     async with httpx.AsyncClient(timeout=30,follow_redirects=False,trust_env=False) as client:
         response=await client.delete(base+'/admin/users/'+str(uuid.UUID(owner)),headers=auth_admin_headers(key))
