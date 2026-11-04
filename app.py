@@ -152,10 +152,24 @@ async def _startup_database():
             await account_privacy.initialize_schema()
             await editor_exports.initialize_schema()
         app.state.privacy_cleanup_task = asyncio.create_task(account_privacy.cleanup_loop())
+        if (os.getenv("NENE_ENV", "").strip().lower() == "staging"
+                and os.getenv("NENE_GENERATION_WORKER_ENABLED", "").strip().lower() == "true"):
+            from generation_worker import consume_events
+
+            app.state.staging_generation_stop = asyncio.Event()
+            app.state.staging_generation_task = asyncio.create_task(
+                consume_events(f"staging-web-{uuid.uuid4()}", app.state.staging_generation_stop)
+            )
+            logger.info("Staging generation worker started.")
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
 async def _shutdown_database():
+    staging_task = getattr(app.state, "staging_generation_task", None)
+    if staging_task:
+        app.state.staging_generation_stop.set()
+        staging_task.cancel()
+        await asyncio.gather(staging_task, return_exceptions=True)
     task = getattr(app.state,"privacy_cleanup_task",None)
     if task:
         task.cancel()
