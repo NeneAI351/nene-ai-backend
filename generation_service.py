@@ -26,6 +26,10 @@ class GenerationPriceChanged(ValueError):
     pass
 
 
+class GenerationEngineUnavailable(ValueError):
+    pass
+
+
 class InsufficientCredits(ValueError):
     pass
 
@@ -61,6 +65,7 @@ async def create_reserved_generation(
     source_image_id: str | None = None,
     source_audio_id: str | None = None,
     credit_limit: Decimal | None = None,
+    ltx_available: bool = True,
     generate_audio: bool = True,
     tts_voice: str | None = None,
 ) -> dict[str, Any]:
@@ -203,9 +208,11 @@ async def create_reserved_generation(
 
             # A replay above returns the already accepted original job. A new
             # request may never reserve more than the reviewed spending limit.
+            if provider == 'ltx' and not ltx_available:
+                raise GenerationEngineUnavailable()
             if provider == 'magic-hour' and not is_tts:
                 from magic_hour_video import enabled
-                if not enabled():raise ValueError('Magic Hour video backup is not enabled yet.')
+                if not enabled():raise GenerationEngineUnavailable()
             if credit_limit is not None and amount > credit_limit:
                 raise GenerationPriceChanged("The price increased. Review the current price before generating; no credits were reserved.")
 
