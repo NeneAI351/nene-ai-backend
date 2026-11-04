@@ -47,7 +47,7 @@ import database
 import generation_store
 import generation_service
 import media_storage
-from generation_service import GenerationRequestConflict, InsufficientCredits, GenerationPriceChanged
+from generation_service import GenerationRequestConflict, InsufficientCredits, GenerationPriceChanged, GenerationEngineUnavailable
 from generation_outbox import initialize_outbox_schema
 
 logging.basicConfig(level=logging.INFO)
@@ -834,8 +834,6 @@ async def create_generation_endpoint(
     selected_provider=(req.provider or '').strip().lower()
     if selected_provider not in {"ltx","magic-hour"}:
         raise HTTPException(status_code=400, detail="Choose a supported video provider.")
-    if selected_provider == 'ltx' and (not os.getenv("LTX_API_KEY", "").strip() or os.getenv('NENE_LTX_VIDEO_ENABLED','true').strip().lower() != 'true'):
-        raise HTTPException(status_code=503, detail="LTX durable generation is not configured; no credits were reserved.")
     if req.type == "image-to-video":
         if _is_production_environment():
             if not req.source_image_id or req.image_url:
@@ -866,10 +864,14 @@ async def create_generation_endpoint(
             source_audio_id=req.source_audio_id,
             generate_audio=req.generate_audio,
             credit_limit=req.credit_limit,
+            ltx_available=bool(os.getenv('LTX_API_KEY', '').strip()) and
+            os.getenv('NENE_LTX_VIDEO_ENABLED', 'true').strip().lower() == 'true',
         )
         return result
     except InsufficientCredits as exc:
         raise HTTPException(status_code=402, detail=str(exc))
+    except GenerationEngineUnavailable:
+        raise HTTPException(status_code=409, detail='generation_engine_unavailable')
     except GenerationPriceChanged as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     except GenerationRequestConflict as exc:
