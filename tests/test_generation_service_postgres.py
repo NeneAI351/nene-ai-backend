@@ -53,7 +53,9 @@ async def test_create_reserves_server_quote_and_replays_idempotently(generation_
         duration_seconds=6,
     )
     first = await generation_service.create_reserved_generation(user_id, "request-1", **kwargs)
-    replay = await generation_service.create_reserved_generation(user_id, "request-1", **kwargs)
+    replay = await generation_service.create_reserved_generation(user_id, "request-1", ltx_available=False, **kwargs)
+    with pytest.raises(generation_service.GenerationEngineUnavailable):
+        await generation_service.create_reserved_generation(user_id, "disabled-engine", ltx_available=False, **kwargs)
     assert first["generation_id"] == replay["generation_id"]
     assert replay["duplicate"] is True
     assert Decimal(first["credits_reserved"]) == Decimal(first["quote"]["recommended_credits"])
