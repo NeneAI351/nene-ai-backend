@@ -887,6 +887,23 @@ async def create_generation_endpoint(
         raise HTTPException(status_code=503, detail="Generation queue is temporarily unavailable.")
 
 
+@app.get("/api/generations")
+async def list_completed_videos(request: Request):
+    await enforce_rate_limit(request, bucket="generation-library", limit=30, window_seconds=60)
+    owner = await get_authenticated_user_id(request)
+    if not database_configured():
+        raise HTTPException(status_code=503, detail="Video library is temporarily unavailable.")
+    rows = await database.fetch_all(
+        """SELECT id::text, generation_type, LEFT(request->>'prompt', 100) AS title
+           FROM generations
+           WHERE user_id=%s AND status='succeeded'
+             AND generation_type IN ('text-to-video','image-to-video','audio-to-video')
+           ORDER BY updated_at DESC, id DESC LIMIT 50""",
+        (owner,),
+    )
+    return JSONResponse({"videos": rows}, headers={"Cache-Control": "private, no-store"})
+
+
 @app.get("/api/generations/{generation_id}")
 async def get_generation(generation_id: str, request: Request):
     """Authenticated owner-only status polling by NENE's durable generation UUID.
