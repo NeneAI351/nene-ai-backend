@@ -27,6 +27,7 @@ from wallet import router as wallet_router
 from account_terms import router as account_terms_router
 from account_profile import router as account_profile_router, initialize_profile_schema
 from account_agreement_store import initialize_account_agreement_schema
+import credit_confirmations
 from payments import router as payments_router, initialize_payment_schema
 from wallet_store import initialize_wallet_schema
 from rate_limits import enforce_rate_limit, close_rate_limit_client
@@ -151,11 +152,17 @@ async def _startup_database():
             await initialize_director_schema()
             await account_privacy.initialize_schema()
             await editor_exports.initialize_schema()
+        if credit_confirmations.configuration():
+            app.state.credit_confirmation_task = asyncio.create_task(credit_confirmations.run())
         app.state.privacy_cleanup_task = asyncio.create_task(account_privacy.cleanup_loop())
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
 async def _shutdown_database():
+    receipt_task = getattr(app.state, "credit_confirmation_task", None)
+    if receipt_task:
+        receipt_task.cancel()
+        await asyncio.gather(receipt_task, return_exceptions=True)
     task = getattr(app.state,"privacy_cleanup_task",None)
     if task:
         task.cancel()
