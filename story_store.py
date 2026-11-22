@@ -260,3 +260,61 @@ async def retry_scene(user_id, story_id, scene_index, failed_id, credit_limit):
                 (result["generation_id"],story_id,user_id,scene_index))
             await conn.execute("UPDATE story_projects SET status='generating',error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s",(story_id,user_id))
             return result
+
+async def generate_selected_scenes(user_id, story_id, selections):
+    """Reserve every selected NEW scene atomically; replay linked jobs without charge.
+
+    The story row serializes batches across tabs/devices. Outbox jobs are not
+    visible to workers until the entire transaction (including wallet) commits.
+    """
+    import os
+    from decimal import Decimal
+    from generation_service import create_reserved_generation
+    if os.getenv('NENE_DURABLE_GENERATION_CREATE_ENABLED','').lower() != 'true':
+        raise ValueError('Story generation is temporarily unavailable.')
+    results=[]
+    async with database._pool.connection() as conn:
+        async with conn.transaction():
+            story=await (await conn.execute('SELECT character_lock,status FROM story_projects WHERE id=%s AND user_id=%s FOR UPDATE',(story_id,user_id))).fetchone()
+            if not story:return None
+            lock=story['character_lock']
+            if isinstance(lock,str):lock=json.loads(lock)
+            settings=lock.get('scene_settings',{})
+            if not isinstance(settings,dict):raise ValueError('Saved scene settings are unavailable.')
+            from pricing import quote
+            from paid_access import paid_available
+            from generation_service import InsufficientCredits
+            required=Decimal('0')
+            for selected in selections:
+                scene=await (await conn.execute('SELECT duration_seconds,generation_id FROM story_scenes WHERE story_id=%s AND user_id=%s AND scene_index=%s FOR UPDATE',(story_id,user_id,selected['scene_index']))).fetchone()
+                if not scene:raise ValueError('Selected scene does not exist.')
+                if scene['generation_id']:continue
+                req=settings.get(str(selected['scene_index']))
+                if not isinstance(req,dict):raise ValueError('This older story needs its original device to continue.')
+                amount=Decimal(str(quote(req['provider'],req['model'],req['resolution'],scene['duration_seconds'])['recommended_credits']))
+                if amount>Decimal(str(selected['credit_limit'])):raise ValueError('The price increased. Review the current price before generating.')
+                required+=amount
+            if required:
+                wallet=await (await conn.execute('SELECT available_credits,reserved_credits,lifetime_consumed FROM wallets WHERE user_id=%s FOR UPDATE',(user_id,))).fetchone()
+                available=await paid_available(conn,user_id,wallet) if wallet else Decimal('0')
+                if available<required:raise InsufficientCredits(f'You need {required-available} more paid credits for the selected scenes. Buy credits or select fewer scenes. No new scenes in this batch were started or charged.')
+            for selected in sorted(selections,key=lambda s:s['scene_index']):
+                index=selected['scene_index']
+                scene=await (await conn.execute('SELECT prompt,duration_seconds,generate_audio,generation_id::text FROM story_scenes WHERE story_id=%s AND user_id=%s AND scene_index=%s FOR UPDATE',(story_id,user_id,index))).fetchone()
+                if not scene:raise ValueError('Selected scene does not exist.')
+                if scene['generation_id']:
+                    results.append({'scene_index':index,'generation_id':scene['generation_id'],'duplicate':True})
+                    continue
+                req=settings.get(str(index))
+                if not isinstance(req,dict):raise ValueError('This older story needs its original device to continue.')
+                result=await create_reserved_generation(user_id,f'story:{story_id}:scene:{index}:v1',
+                    prompt=scene['prompt'],provider=req['provider'],model=req['model'],resolution=req['resolution'],
+                    duration_seconds=scene['duration_seconds'],generation_type=req['type'],
+                    aspect_ratio=req.get('aspect_ratio'),source_image_id=req.get('source_image_id'),
+                    generate_audio=scene['generate_audio'],credit_limit=Decimal(str(selected['credit_limit'])),connection=conn,
+                    ltx_available=bool(os.getenv('LTX_API_KEY','').strip()) and os.getenv('NENE_LTX_VIDEO_ENABLED','true').lower()=='true')
+                await conn.execute("UPDATE story_scenes SET generation_id=%s,status='queued',updated_at=NOW() WHERE story_id=%s AND user_id=%s AND scene_index=%s",(result['generation_id'],story_id,user_id,index))
+                results.append({'scene_index':index,'generation_id':result['generation_id'],'duplicate':result.get('duplicate',False)})
+            if story['status']!='completed':
+                await conn.execute("UPDATE story_projects SET status='generating',updated_at=NOW() WHERE id=%s AND user_id=%s",(story_id,user_id))
+    return {'scenes':results}
