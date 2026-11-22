@@ -97,13 +97,18 @@ async def wallet_ledger(user_id: str, limit: int = 50) -> list[dict[str, Any]]:
 
 
 async def _apply(user_id: str, amount: Decimal, operation_type: str,
-                 generation_id: str, operation_key: str):
+                 generation_id: str, operation_key: str, connection=None):
     await _require_pool()
     amount = Decimal(amount)
     if not amount.is_finite() or amount <= 0 or amount.quantize(Decimal("0.01")) != amount:
         raise ValueError("Amount must be a positive credit amount with at most two decimal places.")
 
-    async with database._pool.connection() as conn:
+    # Worker settlement names repeat for every job. Scope them to the job,
+    # while recognizing a historical settlement for this same generation.
+    legacy_key = operation_key
+    if operation_key in {"release:generation-failed", "capture:generation-succeeded"}:
+        operation_key += ":" + generation_id
+    async with database.transaction_connection(connection) as conn:
         async with conn.transaction():
             # The generation must exist and belong to this authenticated user.
             # Lock it while settling credits so another transaction cannot alter
@@ -128,8 +133,8 @@ async def _apply(user_id: str, amount: Decimal, operation_type: str,
 
             prior = await (await conn.execute(
                 """SELECT operation_type, amount, generation_id::text, result
-                   FROM wallet_operations WHERE user_id=%s AND operation_key=%s""",
-                (user_id, operation_key),
+                   FROM wallet_operations WHERE user_id=%s AND (operation_key=%s OR (operation_key=%s AND generation_id=%s)) ORDER BY created_at DESC LIMIT 1""",
+                (user_id, operation_key, legacy_key, generation_id),
             )).fetchone()
             if prior:
                 if (prior["operation_type"] != operation_type
@@ -247,8 +252,8 @@ async def wallet_reserve(user_id: str, amount: Decimal, generation_id: str, idem
     return await _apply(user_id, amount, "reserve", generation_id, f"reserve:{idempotency_key}")
 
 
-async def wallet_release(user_id: str, amount: Decimal, generation_id: str, idempotency_key: str):
-    return await _apply(user_id, amount, "release", generation_id, f"release:{idempotency_key}")
+async def wallet_release(user_id: str, amount: Decimal, generation_id: str, idempotency_key: str, connection=None):
+    return await _apply(user_id, amount, "release", generation_id, f"release:{idempotency_key}", connection=connection)
 
 
 async def wallet_capture(user_id: str, amount: Decimal, generation_id: str, idempotency_key: str):

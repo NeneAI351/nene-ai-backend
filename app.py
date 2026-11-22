@@ -785,10 +785,12 @@ def generation_availability():
     from readiness import _valid_media_host_allowlist
     video_available = any(item['available'] for item in provider_status())
     accepting = enabled and video_available and _valid_media_host_allowlist(os.getenv('ALLOWED_MEDIA_HOSTS','')) and all(value for key,value in checks.items() if key!='ltx_provider_configured')
+    ltx_ready = bool(os.getenv("LTX_API_KEY", "").strip()) and os.getenv("NENE_LTX_VIDEO_ENABLED", "true").lower() == "true"
     return {"accepting_requests": accepting, "configuration_only": True,
             "generate_audio_supported": True,
-            "story_audio_supported": True,
-            "talking_character_supported": True,
+            "story_audio_supported": ltx_ready,
+            "story_lip_sync_supported": False,
+            "talking_character_supported": ltx_ready,
             "speech_uploads_supported": bool(speech_assets.ffmpeg_executable()),
             "paid_credits_required": True,
             "message": "Paid video submissions are enabled." if accepting else

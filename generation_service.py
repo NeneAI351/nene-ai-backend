@@ -68,6 +68,7 @@ async def create_reserved_generation(
     ltx_available: bool = True,
     generate_audio: bool = True,
     tts_voice: str | None = None,
+    connection=None,
 ) -> dict[str, Any]:
     """Create one billable generation in one PostgreSQL transaction.
 
@@ -162,7 +163,7 @@ async def create_reserved_generation(
     operation_key = f"reserve:{generation_id}"
     amount = Decimal(quote["recommended_credits"]).quantize(Decimal("0.01"))
 
-    async with database._pool.connection() as conn:
+    async with database.transaction_connection(connection) as conn:
         async with conn.transaction():
             await conn.execute('SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))',('account-lifecycle:'+owner,))
             active=await (await conn.execute('SELECT status FROM users WHERE id=%s FOR SHARE',(owner,))).fetchone()
