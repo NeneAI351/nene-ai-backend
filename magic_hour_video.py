@@ -27,7 +27,7 @@ def enabled():
 def validate(request, kind):
     if kind not in {'text-to-video','image-to-video'} or request.get('model') != MODEL:
         raise ValueError('Unsupported Magic Hour backup mode or model.')
-    if request.get('resolution') not in {'720p','1080p'} or request.get('duration') not in {6,8,10}:
+    if request.get('resolution') not in {'480p','720p','1080p'} or request.get('duration') not in {6,8,10}:
         raise ValueError('Unsupported Magic Hour backup quality or duration.')
     if request.get('aspect_ratio') not in {None,'16:9','9:16','1:1'}:
         raise ValueError('Unsupported Magic Hour backup aspect ratio.')
