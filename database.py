@@ -278,3 +278,15 @@ async def complete_idempotency(key: str, response: dict[str, Any], generation_id
 async def delete_idempotency(key: str) -> None:
     await execute("DELETE FROM generation_idempotency WHERE idempotency_key = %s", (key,))
 
+
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def transaction_connection(connection=None):
+    """Borrow an existing transaction without consuming another pool slot."""
+    if connection is not None:
+        yield connection
+    else:
+        async with _pool.connection() as conn:
+            yield conn

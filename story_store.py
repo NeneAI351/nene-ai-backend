@@ -216,3 +216,47 @@ async def get_assembly_job(user_id: str, story_id: str) -> dict[str,Any]|None:
       FROM story_assembly_jobs WHERE story_id=%s AND user_id=%s
       ORDER BY created_at DESC LIMIT 1""",(story_id,user_id))
 
+
+async def retry_scene(user_id, story_id, scene_index, failed_id, credit_limit):
+    """Serialize retries across tabs; reserve once even if linking crashes.
+
+    Only confirmed failed, uncharged work is eligible. Unknown submissions are
+    never resubmitted. Release uses the worker's idempotent settlement key.
+    """
+    import os
+    from decimal import Decimal
+    from generation_service import create_reserved_generation
+    from wallet_store import wallet_release
+    if os.getenv("NENE_DURABLE_GENERATION_CREATE_ENABLED", "").lower() != "true":
+        raise ValueError("Story generation is temporarily unavailable.")
+    async with database._pool.connection() as conn:
+        async with conn.transaction():
+            scene = await (await conn.execute("""SELECT generation_id::text FROM story_scenes
+                WHERE story_id=%s AND user_id=%s AND scene_index=%s FOR UPDATE""",
+                (story_id,user_id,scene_index))).fetchone()
+            if not scene: return None
+            key = "story-retry:" + failed_id
+            prior = await (await conn.execute("""SELECT generation_id::text FROM generation_requests
+                WHERE user_id=%s AND idempotency_key=%s""",(user_id,key))).fetchone()
+            if scene["generation_id"] != failed_id:
+                if prior and prior["generation_id"] == scene["generation_id"]:
+                    return {"generation_id": scene["generation_id"], "duplicate": True}
+                raise ValueError("The scene changed. Refresh its saved progress before retrying.")
+            failed = await (await conn.execute("""SELECT status,request,credits_reserved,credits_charged
+                FROM generations WHERE id=%s AND user_id=%s""",(failed_id,user_id))).fetchone()
+            if not failed or failed["status"] != "failed" or Decimal(failed["credits_charged"]) != 0:
+                raise ValueError("Only a confirmed failed, uncharged scene can be retried.")
+            if Decimal(failed["credits_reserved"]) > 0:
+                await wallet_release(user_id, Decimal(failed["credits_reserved"]), failed_id, "generation-failed", connection=conn)
+            req = failed["request"]
+            result = await create_reserved_generation(user_id,key,prompt=req["prompt"],provider=req["provider"],
+                model=req["model"],resolution=req["resolution"],duration_seconds=req["duration"],
+                generation_type=req["type"],aspect_ratio=req.get("aspect_ratio"),
+                source_image_id=req.get("source_image_id"),generate_audio=req.get("generate_audio",True),
+                connection=conn,credit_limit=credit_limit,ltx_available=bool(os.getenv("LTX_API_KEY","").strip()) and
+                os.getenv("NENE_LTX_VIDEO_ENABLED","true").lower()=="true")
+            await conn.execute("""UPDATE story_scenes SET generation_id=%s,status='queued',error_code=NULL,
+                result_object_key=NULL,updated_at=NOW() WHERE story_id=%s AND user_id=%s AND scene_index=%s""",
+                (result["generation_id"],story_id,user_id,scene_index))
+            await conn.execute("UPDATE story_projects SET status='generating',error_code=NULL,updated_at=NOW() WHERE id=%s AND user_id=%s",(story_id,user_id))
+            return result

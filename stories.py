@@ -52,6 +52,57 @@ def _ensure_unique_scene_indexes(scenes: list[dict[str,Any]]) -> None:
     if sorted(indexes)!=list(range(len(indexes))):
         raise ValueError("Scene indexes must be contiguous and start at zero.")
 
+from decimal import Decimal
+from pricing import quote as price_quote
+
+class QuoteScene(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: str = "ltx"
+    model: str = "ltx-2-5-fast"
+    resolution: str = "720p"
+    duration: int
+
+class StoryQuote(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    scenes: list[QuoteScene] = Field(min_length=1, max_length=50)
+
+@router.post("/quote")
+async def quote_story(body: StoryQuote, user_id: str=Depends(get_authenticated_user_id)):
+    costs = []
+    try:
+        for index, scene in enumerate(body.scenes):
+            # Native scene sound is not an uploaded-audio lip-sync contract.
+            if scene.provider != "ltx" or scene.model != "ltx-2-5-fast" or scene.resolution not in {"720p", "1080p"} or scene.duration not in {6, 8, 10}:
+                raise ValueError("Unsupported story scene settings.")
+            cost = Decimal(str(price_quote(scene.provider, scene.model, scene.resolution, scene.duration)["recommended_credits"]))
+            if not cost.is_finite() or cost <= 0:
+                raise ValueError("Story pricing is unavailable.")
+            costs.append({"scene_index": index, "credits": str(cost)})
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"scenes": costs, "total_credits": str(sum((Decimal(s["credits"]) for s in costs), Decimal(0))),
+            "assembly_credits": "0", "lip_sync_supported": False,
+            "pricing_policy": "Each scene is re-priced on submission and cannot exceed its confirmed credit limit."}
+
+class SceneRetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    failed_generation_id: uuid.UUID
+    credit_limit: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+
+@router.post("/{story_id}/scenes/{scene_index}/retry", status_code=202)
+async def retry_scene(story_id: uuid.UUID, scene_index: int, body: SceneRetry,
+                      user_id: str=Depends(get_authenticated_user_id)):
+    if not database.database_configured(): raise _unavailable()
+    if not 0 <= scene_index < 50: raise HTTPException(status_code=422, detail="Invalid scene index.")
+    from generation_service import InsufficientCredits
+    try:
+        result = await story_store.retry_scene(user_id, str(story_id), scene_index, str(body.failed_generation_id), body.credit_limit)
+        if result is None: raise HTTPException(status_code=404, detail="Story scene not found.")
+        return result
+    except InsufficientCredits as exc: raise HTTPException(status_code=402, detail=str(exc))
+    except (ValueError, LookupError) as exc: raise HTTPException(status_code=409, detail=str(exc))
+    except RuntimeError: raise _unavailable()
+
 @router.get("")
 async def list_stories(limit: int=Query(default=30,ge=1,le=100), user_id: str=Depends(get_authenticated_user_id)):
     if not database.database_configured(): raise _unavailable()
