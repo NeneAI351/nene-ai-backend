@@ -98,7 +98,7 @@ def select_provider(
         p = status[provider]
         if not p["available"] or generation_type not in p["generation_types"]:
             continue
-        if provider == 'magic-hour' and resolution not in {'720p','1080p'}:continue
+        if provider == 'magic-hour' and resolution not in {'480p','720p','1080p'}:continue
         # Pricing must be calculated by the authoritative pricing module after
         # selection. Never trust a browser-provided credit quote.
         return {
@@ -132,6 +132,6 @@ def story_generation_profile() -> dict[str, Any] | None:
         return {'provider':'ltx','model':'ltx-2-5-fast','resolutions':['720p','1080p'],
                 'durations':[6,8,10],'reference_aspect_ratio':'16:9','lip_sync_supported':False}
     if 'magic-hour' in available:
-        return {'provider':'magic-hour','model':'minimax-h3','resolutions':['720p','1080p'],
+        return {'provider':'magic-hour','model':'minimax-h3','resolutions':['480p','720p','1080p'],
                 'durations':[6,8,10],'reference_aspect_ratio':None,'lip_sync_supported':False}
     return None
