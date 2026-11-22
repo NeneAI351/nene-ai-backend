@@ -791,6 +791,7 @@ def generation_availability():
     return {"accepting_requests": accepting, "configuration_only": True,
             "generate_audio_supported": True,
             "story_audio_supported": story_profile is not None,
+            "story_selected_scenes_supported": True,
             "story_generation": story_profile,
             "story_lip_sync_supported": False,
             "talking_character_supported": ltx_ready,
