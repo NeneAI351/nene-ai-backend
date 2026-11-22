@@ -53,6 +53,23 @@ async def test_selected_batches_are_atomic_owned_and_replay_safe(generation_serv
     with pytest.raises(generation_service.InsufficientCredits,match='more paid credits'):
         await story_store.generate_selected_scenes(owner,story['id'],selection)
     assert not await database.fetch_all('SELECT id FROM generations WHERE user_id=%s',(owner,))
+    # Even an error AFTER the first reservation rolls the entire batch back.
+    await database.execute('UPDATE wallets SET available_credits=5000 WHERE user_id=%s',(owner,))
+    original_create=generation_service.create_reserved_generation
+    calls=0
+    async def fail_second(*args,**kwargs):
+        nonlocal calls
+        calls+=1
+        if calls==2:raise ValueError('simulated second-scene rejection')
+        return await original_create(*args,**kwargs)
+    monkeypatch.setattr(generation_service,'create_reserved_generation',fail_second)
+    with pytest.raises(ValueError,match='second-scene rejection'):
+        await story_store.generate_selected_scenes(owner,story['id'],selection)
+    assert not await database.fetch_all('SELECT id FROM generations WHERE user_id=%s',(owner,))
+    wallet=await database.fetch_one('SELECT available_credits,reserved_credits FROM wallets WHERE user_id=%s',(owner,))
+    assert Decimal(wallet['available_credits'])==5000 and Decimal(wallet['reserved_credits'])==0
+    monkeypatch.setattr(generation_service,'create_reserved_generation',original_create)
+    await database.execute('UPDATE wallets SET available_credits=%s WHERE user_id=%s',(price,owner))
     first,second=await asyncio.gather(*[story_store.generate_selected_scenes(owner,story['id'],selection[:1]) for _ in range(2)])
     assert first['scenes'][0]['generation_id']==second['scenes'][0]['generation_id']
     saved=await story_store.get_story(owner,story['id'])
