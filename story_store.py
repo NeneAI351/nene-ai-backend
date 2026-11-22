@@ -102,7 +102,7 @@ async def get_story(user_id: str, story_id: str) -> dict[str,Any]|None:
            WHEN g.status IN ('submitting','submitted','running','submission_unknown') THEN 'generating'
            WHEN g.status='queued' THEN 'queued'
            ELSE s.status END AS status,
-      s.generation_id::text,COALESCE(s.result_object_key,g.result->>'object_key') AS result_object_key,
+      s.generation_id::text,g.request AS generation_request,COALESCE(s.result_object_key,g.result->>'object_key') AS result_object_key,
       CASE WHEN g.status='failed' THEN COALESCE(g.error->>'code',s.error_code) ELSE s.error_code END AS error_code,
       s.created_at,s.updated_at
       FROM story_scenes s

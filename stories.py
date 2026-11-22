@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json, uuid
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from fastapi import Header
 import media_storage
@@ -90,11 +90,13 @@ class SceneRetry(BaseModel):
     credit_limit: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
 
 @router.post("/{story_id}/scenes/{scene_index}/retry", status_code=202)
-async def retry_scene(story_id: uuid.UUID, scene_index: int, body: SceneRetry,
+async def retry_scene(story_id: uuid.UUID, scene_index: int, body: SceneRetry, request: Request,
                       user_id: str=Depends(get_authenticated_user_id)):
     if not database.database_configured(): raise _unavailable()
     if not 0 <= scene_index < 50: raise HTTPException(status_code=422, detail="Invalid scene index.")
     from generation_service import InsufficientCredits
+    from rate_limits import enforce_rate_limit
+    await enforce_rate_limit(request, bucket="generation-create", limit=8, window_seconds=60)
     try:
         result = await story_store.retry_scene(user_id, str(story_id), scene_index, str(body.failed_generation_id), body.credit_limit)
         if result is None: raise HTTPException(status_code=404, detail="Story scene not found.")
