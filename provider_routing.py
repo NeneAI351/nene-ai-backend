@@ -123,3 +123,15 @@ def select_provider(
             raise ValueError(f"{p['label']} is not enabled for generation yet.")
         raise ValueError(f"{p['label']} does not support this generation type.")
     raise RuntimeError("No configured, verified video provider is currently available.")
+
+
+def story_generation_profile() -> dict[str, Any] | None:
+    """Pin one verified adapter for the whole reviewed story; never fail over paid jobs."""
+    available = {p['id'] for p in provider_status() if p['available']}
+    if 'ltx' in available:
+        return {'provider':'ltx','model':'ltx-2-5-fast','resolutions':['720p','1080p'],
+                'durations':[6,8,10],'reference_aspect_ratio':'16:9','lip_sync_supported':False}
+    if 'magic-hour' in available:
+        return {'provider':'magic-hour','model':'minimax-h3','resolutions':['720p','1080p'],
+                'durations':[6,8,10],'reference_aspect_ratio':None,'lip_sync_supported':False}
+    return None

@@ -72,7 +72,7 @@ async def quote_story(body: StoryQuote, user_id: str=Depends(get_authenticated_u
     try:
         for index, scene in enumerate(body.scenes):
             # Native scene sound is not an uploaded-audio lip-sync contract.
-            if scene.provider != "ltx" or scene.model != "ltx-2-5-fast" or scene.resolution not in {"720p", "1080p"} or scene.duration not in {6, 8, 10}:
+            if (scene.provider, scene.model) not in {("ltx","ltx-2-5-fast"),("magic-hour","minimax-h3")} or scene.resolution not in {"720p", "1080p"} or scene.duration not in {6, 8, 10}:
                 raise ValueError("Unsupported story scene settings.")
             cost = Decimal(str(price_quote(scene.provider, scene.model, scene.resolution, scene.duration)["recommended_credits"]))
             if not cost.is_finite() or cost <= 0:

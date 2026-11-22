@@ -40,6 +40,8 @@ CREDIT_VALUE_NGN = min(
 )
 # Conservative payment fee allocation: use Starter's fixed fee per credit plus
 # the percentage fee. This is a guardrail; actual reporting uses actual order fee.
+PAYMENT_FEE_ALLOWANCE = float(os.getenv("NENE_PAYMENT_FEE_ALLOWANCE_PERCENT", str(PAYSTACK_LOCAL_PERCENT)))
+
 FIXED_FEE_PER_CREDIT_NGN = PAYSTACK_LOCAL_FIXED_NGN / CREDIT_PACKAGES["starter"]["credits"]
 
 # Exact public API rates where the provider publishes them directly.
@@ -138,9 +140,12 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
         raise ValueError("NENE_PAYSTACK_LOCAL_FEE_CAP_NGN must be finite and non-negative")
     if not math.isfinite(PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN) or PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN < 0:
         raise ValueError("NENE_PAYSTACK_LOCAL_FIXED_FEE_WAIVER_BELOW_NGN must be finite and non-negative")
+    if not math.isfinite(PAYMENT_FEE_ALLOWANCE) or not 0 <= PAYMENT_FEE_ALLOWANCE < 1 - margin:
+        raise ValueError("Payment fee allowance must leave room for the target margin")
+    effective_fee_percent = max(PAYSTACK_LOCAL_PERCENT, PAYMENT_FEE_ALLOWANCE)
     credit_revenue_ngn = CREDIT_VALUE_NGN
     allocated_payment_fee_ngn = (
-        credit_revenue_ngn * PAYSTACK_LOCAL_PERCENT + FIXED_FEE_PER_CREDIT_NGN
+        credit_revenue_ngn * effective_fee_percent + FIXED_FEE_PER_CREDIT_NGN
     )
     # Target contribution is a percentage of customer revenue after fees:
     # revenue - allocated fee - provider cost >= margin * revenue.
@@ -156,7 +161,7 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
     # otherwise overstate revenue and profit when NGN package pricing differs.
     revenue = allocated_revenue_ngn / USD_TO_NGN
     estimated_fee_ngn = (
-        allocated_revenue_ngn * PAYSTACK_LOCAL_PERCENT
+        allocated_revenue_ngn * effective_fee_percent
         + credits * FIXED_FEE_PER_CREDIT_NGN
     )
     contribution_ngn = allocated_revenue_ngn - estimated_fee_ngn - buffered_cost_ngn
@@ -171,6 +176,7 @@ def quote(provider: str, model: str, resolution: str, duration: float, margin: f
         "provider_cost_usd": round(raw_cost, 6),
         "provider_cost_with_risk_buffer_usd": round(cost_with_buffer, 6),
         "target_gross_margin": margin,
+        "payment_fee_allowance_percent": effective_fee_percent,
         "nene_credit_usd": NENE_CREDIT_USD,
         "credit_face_value_ngn": round(CREDIT_VALUE_NGN, 4),
         "conservative_payment_fee_per_credit_ngn": round(allocated_payment_fee_ngn, 4),
