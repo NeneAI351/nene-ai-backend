@@ -210,3 +210,30 @@ async def story_video_playback(story_id: uuid.UUID,user_id: str=Depends(get_auth
         raise HTTPException(status_code=503,detail="Private video playback URL could not be created.")
     return {"video_url":url,"expires_in":media_storage.SIGNED_URL_TTL_SECONDS,"content_type":"video/mp4"}
 
+
+class SelectedScene(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    scene_index: int = Field(ge=0,lt=50)
+    credit_limit: Decimal = Field(gt=0,max_digits=12,decimal_places=2)
+
+class SelectedScenes(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    scenes: list[SelectedScene] = Field(min_length=1,max_length=50)
+
+@router.post('/{story_id}/generate-selected',status_code=202)
+async def generate_selected(story_id: uuid.UUID, body: SelectedScenes, request: Request,
+                            user_id: str=Depends(get_authenticated_user_id)):
+    if not database.database_configured():raise _unavailable()
+    from generation_service import InsufficientCredits
+    from rate_limits import enforce_rate_limit
+    await enforce_rate_limit(request,bucket='generation-create',limit=8,window_seconds=60)
+    indexes=[s.scene_index for s in body.scenes]
+    if len(indexes)!=len(set(indexes)):raise HTTPException(status_code=422,detail='Select each scene once.')
+    try:
+        result=await story_store.generate_selected_scenes(user_id,str(story_id),[s.model_dump() for s in body.scenes])
+        if result is None:raise HTTPException(status_code=404,detail='Story not found.')
+        return result
+    except InsufficientCredits as exc:
+        raise HTTPException(status_code=402,detail=str(exc))
+    except (ValueError,LookupError,KeyError) as exc:raise HTTPException(status_code=409,detail=str(exc))
+    except RuntimeError:raise _unavailable()
