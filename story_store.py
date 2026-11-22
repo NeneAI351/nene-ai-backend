@@ -280,12 +280,13 @@ async def generate_selected_scenes(user_id, story_id, selections):
             lock=story['character_lock']
             if isinstance(lock,str):lock=json.loads(lock)
             settings=lock.get('scene_settings',{})
+            if not isinstance(settings,dict):raise ValueError('Saved scene settings are unavailable.')
             from pricing import quote
             from paid_access import paid_available
             from generation_service import InsufficientCredits
             required=Decimal('0')
             for selected in selections:
-                scene=await (await conn.execute('SELECT duration_seconds,generation_id FROM story_scenes WHERE story_id=%s AND user_id=%s AND scene_index=%s',(story_id,user_id,selected['scene_index']))).fetchone()
+                scene=await (await conn.execute('SELECT duration_seconds,generation_id FROM story_scenes WHERE story_id=%s AND user_id=%s AND scene_index=%s FOR UPDATE',(story_id,user_id,selected['scene_index']))).fetchone()
                 if not scene:raise ValueError('Selected scene does not exist.')
                 if scene['generation_id']:continue
                 req=settings.get(str(selected['scene_index']))
