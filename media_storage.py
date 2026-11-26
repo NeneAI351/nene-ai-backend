@@ -222,3 +222,13 @@ def delete_source_image(object_key: str) -> None:
         raise ValueError("Invalid source image object key.")
     cfg = _storage_config()
     _client().delete_object(Bucket=cfg["bucket"], Key=object_key)
+
+
+def read_source_image(object_key: str) -> bytes:
+    """Read a private, server-selected source image with a bounded buffer."""
+    cfg = _storage_config()
+    body = _client().get_object(Bucket=cfg["bucket"], Key=object_key)["Body"]
+    with body:
+        data = body.read(MAX_SOURCE_IMAGE_BYTES + 1)
+    validate_image_bytes(data)
+    return data

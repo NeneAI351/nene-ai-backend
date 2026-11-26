@@ -339,7 +339,11 @@ async def run_once():
 
 async def cleanup_loop():
     while True:
-        try:await run_once()
+        try:
+            await run_once()
+            if os.getenv("NENE_PHOTO_DESIGN_STAGING_QUOTES") == "true":
+                from photo_design import cleanup_expired_quotes
+                await cleanup_expired_quotes()
         except asyncio.CancelledError:raise
         except Exception:log.exception('Privacy cleanup will retry')
         await asyncio.sleep(20)
