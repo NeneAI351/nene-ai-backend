@@ -158,13 +158,23 @@ async def _startup_database():
         if credit_confirmations.configuration():
             app.state.credit_confirmation_task = asyncio.create_task(credit_confirmations.run())
         app.state.privacy_cleanup_task = asyncio.create_task(account_privacy.cleanup_loop())
-        if os.getenv("NENE_PHOTO_STAGING_SMOKE") and os.getenv("NENE_ENV") == "staging":
+        production_photo_check = bool(os.getenv("NENE_PHOTO_PRODUCTION_SMOKE"))
+        logger.info("Photo Design production verification configured: %s", production_photo_check)
+        if production_photo_check:
+            app.state.photo_staging_smoke = asyncio.create_task(_verify_production_photo_provider())
+        elif os.getenv("NENE_PHOTO_STAGING_SMOKE") and os.getenv("NENE_ENV") == "staging":
             from photo_design_staging_smoke import run_once
             app.state.photo_staging_smoke = asyncio.create_task(run_once())
-        elif os.getenv("NENE_PHOTO_PRODUCTION_SMOKE"):
-            from photo_design_staging_smoke import run_once
-            app.state.photo_staging_smoke = asyncio.create_task(run_once(production=True))
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
+
+async def _verify_production_photo_provider():
+    from photo_design_staging_smoke import run_once
+
+    try:
+        await run_once(production=True)
+    except Exception as error:
+        logger.error("Photo Design production verification stopped (%s)", type(error).__name__)
+
 
 @app.on_event("shutdown")
 async def _shutdown_database():
