@@ -165,6 +165,9 @@ async def _startup_database():
         elif os.getenv("NENE_PHOTO_STAGING_SMOKE") and os.getenv("NENE_ENV") == "staging":
             from photo_design_staging_smoke import run_once
             app.state.photo_staging_smoke = asyncio.create_task(run_once())
+        if os.getenv("NENE_VOICE_PRODUCTION_CHECK"):
+            from voice_production_check import run_once as verify_voice
+            app.state.voice_production_check = asyncio.create_task(verify_voice())
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 async def _verify_production_photo_provider():
@@ -191,6 +194,10 @@ async def _shutdown_database():
     if smoke:
         smoke.cancel()
         await asyncio.gather(smoke, return_exceptions=True)
+    voice_check = getattr(app.state, 'voice_production_check', None)
+    if voice_check:
+        voice_check.cancel()
+        await asyncio.gather(voice_check, return_exceptions=True)
     await close_database()
     await close_rate_limit_client()
 
