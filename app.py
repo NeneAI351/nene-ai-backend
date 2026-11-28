@@ -39,6 +39,7 @@ from stories import router as stories_router
 import story_store
 import speech_assets
 import speech_synthesis
+import subtitle_translation
 import account_privacy
 import editor_exports
 import photo_design
@@ -112,6 +113,7 @@ app.include_router(payments_router)
 app.include_router(readiness_router)
 app.include_router(speech_assets.router)
 app.include_router(speech_synthesis.router)
+app.include_router(subtitle_translation.router)
 app.include_router(account_privacy.router)
 app.include_router(editor_exports.router)
 app.include_router(photo_design.router)
