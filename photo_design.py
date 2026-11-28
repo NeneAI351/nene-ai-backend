@@ -3,6 +3,7 @@
 import os
 import uuid
 from decimal import Decimal, InvalidOperation
+from typing import Annotated
 
 import httpx
 from pydantic import BaseModel
@@ -191,7 +192,7 @@ async def save(edit_id: uuid.UUID, owner: str = Depends(get_authenticated_user_i
 
 
 @router.get("/edits")
-async def saved_edits(owner: str = Depends(get_authenticated_user_id), offset: int = Query(0, ge=0)):
+async def saved_edits(owner: str = Depends(get_authenticated_user_id), offset: Annotated[int, Query(ge=0)] = 0):
     rows = await database.fetch_all(
         """SELECT id,result_key FROM photo_design_quotes WHERE user_id=%s AND result_key IS NOT NULL
            ORDER BY expires_at DESC, id DESC LIMIT 51 OFFSET %s""", (owner, offset),
