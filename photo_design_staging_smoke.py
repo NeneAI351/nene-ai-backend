@@ -1,4 +1,4 @@
-"""One provider call against the isolated staging database, with no wallet access."""
+"""One opt-in provider check using a synthetic photo, with no wallet access."""
 import logging
 import os
 import struct
@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 STAGING_ISSUER = "https://agchmegopyktwofcupny.supabase.co/auth/v1"
 STAGING_DB_REF = "agchmegopyktwofcupny"
 RUN_ID = "photo-design-outfit-smoke-v1"
+PRODUCTION_RUN_ID = "photo-design-production-outfit-smoke-v1"
+PRODUCTION_SERVICE = "srv-daffnvdg1s2s73eclr9g"
 
 
 def shirt_fixture():
@@ -40,19 +42,36 @@ def shirt_fixture():
     )
 
 
-async def run_once():
-    if (
-        os.getenv("NENE_PHOTO_STAGING_SMOKE") != RUN_ID
-        or os.getenv("NENE_ENV", "").strip().lower() != "staging"
-        or os.getenv("AUTH_ISSUER", "").rstrip("/") != STAGING_ISSUER
-        or STAGING_DB_REF not in os.getenv("DATABASE_URL", "")
-        or database._pool is None
-    ):
+async def run_once(*, production=False):
+    if database._pool is None:
         return
+
+    environment = os.getenv("NENE_ENV", "").strip().lower()
+    if production:
+        if (
+            os.getenv("NENE_PHOTO_PRODUCTION_SMOKE") != PRODUCTION_RUN_ID
+            or os.getenv("RENDER_SERVICE_ID") != PRODUCTION_SERVICE
+            or environment == "staging"
+            or STAGING_DB_REF in os.getenv("DATABASE_URL", "")
+            or os.getenv("NENE_PHOTO_DESIGN_ENABLED") == "true"
+        ):
+            return
+        run_id = PRODUCTION_RUN_ID
+        label = "production"
+    else:
+        if (
+            os.getenv("NENE_PHOTO_STAGING_SMOKE") != RUN_ID
+            or environment != "staging"
+            or os.getenv("AUTH_ISSUER", "").rstrip("/") != STAGING_ISSUER
+            or STAGING_DB_REF not in os.getenv("DATABASE_URL", "")
+        ):
+            return
+        run_id = RUN_ID
+        label = "staging"
 
     async with database._pool.connection() as conn:
         async with conn.transaction():
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (RUN_ID,))
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (run_id,))
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS photo_design_staging_smoke (
                     run_id TEXT PRIMARY KEY,
@@ -63,23 +82,23 @@ async def run_once():
             """)
             claim = await (await conn.execute(
                 "INSERT INTO photo_design_staging_smoke(run_id) VALUES (%s) ON CONFLICT DO NOTHING RETURNING run_id",
-                (RUN_ID,),
+                (run_id,),
             )).fetchone()
     if not claim:
         return
 
     async def report_response(response):
         if not response.is_success:
-            logger.warning("Photo Design staging smoke provider status=%s", response.status_code)
+            logger.warning("Photo Design %s smoke provider status=%s", label, response.status_code)
             return
         await response.aread()
         usage = response.json().get("usage") or {}
-        logger.info("Photo Design staging smoke input_tokens=%s output_tokens=%s",
-                    usage.get("input_tokens"), usage.get("output_tokens"))
+        logger.info("Photo Design %s smoke input_tokens=%s output_tokens=%s",
+                    label, usage.get("input_tokens"), usage.get("output_tokens"))
 
     try:
         async with httpx.AsyncClient(event_hooks={"response": [report_response]}) as client:
             edited = await edit_photo(client, shirt_fixture(), "Change the red shirt into a navy blazer. Keep the plain background.")
-        logger.info("Photo Design staging smoke succeeded: validated WebP, bytes=%s", len(edited))
+        logger.info("Photo Design %s smoke succeeded: validated WebP, bytes=%s", label, len(edited))
     except PhotoEditError:
-        logger.warning("Photo Design staging smoke failed; no app credits charged")
+        logger.warning("Photo Design %s smoke failed; no app credits charged", label)
