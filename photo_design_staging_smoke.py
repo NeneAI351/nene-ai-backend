@@ -48,13 +48,16 @@ async def run_once(*, production=False):
 
     environment = os.getenv("NENE_ENV", "").strip().lower()
     if production:
-        if (
-            os.getenv("NENE_PHOTO_PRODUCTION_SMOKE") != PRODUCTION_RUN_ID
-            or os.getenv("RENDER_SERVICE_ID") != PRODUCTION_SERVICE
-            or environment == "staging"
-            or STAGING_DB_REF in os.getenv("DATABASE_URL", "")
-            or os.getenv("NENE_PHOTO_DESIGN_ENABLED") == "true"
-        ):
+        prerequisites = {
+            "run token": os.getenv("NENE_PHOTO_PRODUCTION_SMOKE") == PRODUCTION_RUN_ID,
+            "production Render service": os.getenv("RENDER_SERVICE_ID") == PRODUCTION_SERVICE,
+            "production environment": environment != "staging",
+            "production database": STAGING_DB_REF not in os.getenv("DATABASE_URL", ""),
+            "customer access disabled": os.getenv("NENE_PHOTO_DESIGN_ENABLED") != "true",
+        }
+        unmet = [name for name, met in prerequisites.items() if not met]
+        if unmet:
+            logger.warning("Photo Design production smoke skipped: %s", ", ".join(unmet))
             return
         run_id = PRODUCTION_RUN_ID
         label = "production"
@@ -85,7 +88,9 @@ async def run_once(*, production=False):
                 (run_id,),
             )).fetchone()
     if not claim:
+        logger.info("Photo Design %s smoke already claimed", label)
         return
+    logger.info("Photo Design %s smoke started", label)
 
     async def report_response(response):
         if not response.is_success:
