@@ -43,9 +43,11 @@ async def initialize_schema():
         await conn.commit()
 
 
-def staging_price():
-    """Require an explicit staging price while settlement is still in development."""
-    if database._pool is None or os.getenv("NENE_PHOTO_DESIGN_STAGING_QUOTES") != "true":
+def photo_edit_price():
+    """Allow staging and production to enable Photo Design independently."""
+    environment = os.getenv("NENE_ENV", "").strip().lower()
+    flag = "NENE_PHOTO_DESIGN_STAGING_QUOTES" if environment == "staging" else "NENE_PHOTO_DESIGN_ENABLED"
+    if database._pool is None or os.getenv(flag) != "true":
         return None
     try:
         price = Decimal(os.getenv("NENE_PHOTO_EDIT_CREDITS", "0"))
@@ -58,7 +60,7 @@ def staging_price():
 
 @router.get("/availability")
 async def availability(_owner: str = Depends(get_authenticated_user_id)):
-    return {"available": staging_price() is not None and bool(
+    return {"available": photo_edit_price() is not None and bool(
         os.getenv("OPENAI_API_KEY") and os.getenv("NENE_PHOTO_EDIT_MODEL")
     )}
 
@@ -70,7 +72,7 @@ async def quote(
     prompt: str = Form(...),
     owner: str = Depends(get_authenticated_user_id),
 ):
-    price = staging_price()
+    price = photo_edit_price()
     if price is None:
         raise HTTPException(503, "Photo Design pricing is unavailable.")
     await enforce_rate_limit(request, bucket="photo-design-quote", limit=5, window_seconds=60)
@@ -131,7 +133,7 @@ class EditRequest(BaseModel):
 
 @router.post("/edits")
 async def generate(body: EditRequest, request: Request, owner: str = Depends(get_authenticated_user_id)):
-    if staging_price() is None:
+    if photo_edit_price() is None:
         raise HTTPException(503, "Photo Design is unavailable.")
     await enforce_rate_limit(request, bucket="photo-design-edit", limit=5, window_seconds=60)
     quote_id = str(body.quote_id)
@@ -155,7 +157,7 @@ async def generate(body: EditRequest, request: Request, owner: str = Depends(get
             if not row["valid"]:
                 raise HTTPException(410, "The quote expired. Review the credit cost again.")
             price = row["credit_cost"]
-            if price != staging_price():
+            if price != photo_edit_price():
                 raise HTTPException(409, "The price changed. Review the credit cost again.")
             await require_account_agreement(conn, owner)
             wallet = await (await conn.execute(
