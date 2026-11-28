@@ -158,6 +158,9 @@ async def _startup_database():
         if credit_confirmations.configuration():
             app.state.credit_confirmation_task = asyncio.create_task(credit_confirmations.run())
         app.state.privacy_cleanup_task = asyncio.create_task(account_privacy.cleanup_loop())
+        if os.getenv("NENE_PHOTO_STAGING_SMOKE") and os.getenv("NENE_ENV") == "staging":
+            from photo_design_staging_smoke import run_once
+            app.state.photo_staging_smoke = asyncio.create_task(run_once())
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
@@ -171,6 +174,10 @@ async def _shutdown_database():
         task.cancel()
         try:await task
         except asyncio.CancelledError:pass
+    smoke = getattr(app.state, 'photo_staging_smoke', None)
+    if smoke:
+        smoke.cancel()
+        await asyncio.gather(smoke, return_exceptions=True)
     await close_database()
     await close_rate_limit_client()
 
