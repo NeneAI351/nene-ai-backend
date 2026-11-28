@@ -7,6 +7,7 @@ import zlib
 import httpx
 
 import database
+from rate_limits import _redis_client
 from photo_design_provider import PhotoEditError, edit_photo
 
 logger = logging.getLogger(__name__)
@@ -72,21 +73,30 @@ async def run_once(*, production=False):
         run_id = RUN_ID
         label = "staging"
 
-    async with database._pool.connection() as conn:
-        async with conn.transaction():
-            await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (run_id,))
-            await conn.execute("""
-                CREATE TABLE IF NOT EXISTS photo_design_staging_smoke (
-                    run_id TEXT PRIMARY KEY,
-                    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                );
-                ALTER TABLE photo_design_staging_smoke ENABLE ROW LEVEL SECURITY;
-                REVOKE ALL ON photo_design_staging_smoke FROM PUBLIC;
-            """)
-            claim = await (await conn.execute(
-                "INSERT INTO photo_design_staging_smoke(run_id) VALUES (%s) ON CONFLICT DO NOTHING RETURNING run_id",
-                (run_id,),
-            )).fetchone()
+    if production:
+        redis_url = os.getenv("REDIS_URL", "").strip()
+        if not redis_url.startswith("rediss://"):
+            logger.warning("Photo Design production smoke skipped: TLS Redis is unavailable")
+            return
+        claim = await _redis_client(redis_url).set(
+            f"nene:photo-design:provider-check:{run_id}", "claimed", nx=True
+        )
+    else:
+        async with database._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (run_id,))
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS photo_design_staging_smoke (
+                        run_id TEXT PRIMARY KEY,
+                        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                    ALTER TABLE photo_design_staging_smoke ENABLE ROW LEVEL SECURITY;
+                    REVOKE ALL ON photo_design_staging_smoke FROM PUBLIC;
+                """)
+                claim = await (await conn.execute(
+                    "INSERT INTO photo_design_staging_smoke(run_id) VALUES (%s) ON CONFLICT DO NOTHING RETURNING run_id",
+                    (run_id,),
+                )).fetchone()
     if not claim:
         logger.info("Photo Design %s smoke already claimed", label)
         return
