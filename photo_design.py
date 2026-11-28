@@ -193,7 +193,7 @@ async def save(edit_id: uuid.UUID, owner: str = Depends(get_authenticated_user_i
 @router.get("/edits")
 async def saved_edits(owner: str = Depends(get_authenticated_user_id)):
     rows = await database.fetch_all(
-        """SELECT id,result_key FROM photo_design_quotes WHERE user_id=%s AND saved=TRUE
+        """SELECT id,result_key FROM photo_design_quotes WHERE user_id=%s AND result_key IS NOT NULL
            ORDER BY expires_at DESC LIMIT 50""", (owner,),
     )
     return {"edits": [public_edit(row) for row in rows]}
