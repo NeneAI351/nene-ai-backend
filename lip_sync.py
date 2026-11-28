@@ -31,9 +31,11 @@ def quote(duration):
     if duration not in {6, 8, 10}:
         raise ValueError("Choose 6, 8, or 10 seconds.")
     rate = Decimal(os.getenv("NENE_MAGIC_HOUR_CREDIT_USD", "0.0025"))
+    if not rate.is_finite() or not 0 < rate <= 1:
+        raise ValueError("Lip-sync pricing is unavailable.")
     cost = rate * duration * FPS
     return {"provider": "magic-hour", "model": MODEL, "resolution": "source",
-            "recommended_credits": duration * CREDITS_PER_SECOND,
+            "duration_seconds": duration, "recommended_credits": duration * CREDITS_PER_SECOND,
             "provider_cost_usd": float(cost), "provider_cost_with_risk_buffer_usd": float(cost) * (1 + pricing.RISK_BUFFER),
             "rate_basis": "standard_mode_capped_frames"}
 
@@ -50,7 +52,7 @@ def enabled():
         revenue = 10 * CREDITS_PER_SECOND * (
             pricing.CREDIT_VALUE_NGN * (1 - pricing.PAYMENT_FEE_ALLOWANCE) - pricing.FIXED_FEE_PER_CREDIT_NGN)
         return 0 < cost <= revenue * .8
-    except ArithmeticError:
+    except (ArithmeticError, ValueError):
         return False
 
 
