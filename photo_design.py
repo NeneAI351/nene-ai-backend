@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 import httpx
 from pydantic import BaseModel
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 import database
@@ -191,12 +191,13 @@ async def save(edit_id: uuid.UUID, owner: str = Depends(get_authenticated_user_i
 
 
 @router.get("/edits")
-async def saved_edits(owner: str = Depends(get_authenticated_user_id)):
+async def saved_edits(owner: str = Depends(get_authenticated_user_id), offset: int = Query(0, ge=0)):
     rows = await database.fetch_all(
         """SELECT id,result_key FROM photo_design_quotes WHERE user_id=%s AND result_key IS NOT NULL
-           ORDER BY expires_at DESC LIMIT 50""", (owner,),
+           ORDER BY expires_at DESC, id DESC LIMIT 51 OFFSET %s""", (owner, offset),
     )
-    return {"edits": [public_edit(row) for row in rows]}
+    return {"edits": [public_edit(row) for row in rows[:50]],
+            "next_offset": offset + 50 if len(rows) > 50 else None}
 
 
 async def cleanup_expired_quotes():
