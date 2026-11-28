@@ -86,6 +86,7 @@ async def translate(body: Translation, request: Request,
     key = str(key)
     async with database._pool.connection() as conn:
         async with conn.transaction():
+            await conn.execute("SELECT set_config('nene.translation_owner', %s, true)", (owner,))
             await conn.execute("SELECT pg_advisory_xact_lock_shared(hashtextextended(%s,0))",
                                ("account-lifecycle:" + owner,))
             account = await (await conn.execute("SELECT status FROM users WHERE id=%s", (owner,))).fetchone()
