@@ -341,7 +341,7 @@ async def cleanup_loop():
     while True:
         try:
             await run_once()
-            if os.getenv("NENE_PHOTO_DESIGN_STAGING_QUOTES") == "true":
+            if os.getenv("NENE_PHOTO_DESIGN_STAGING_QUOTES") == "true" or os.getenv("NENE_PHOTO_DESIGN_ENABLED") == "true":
                 from photo_design import cleanup_expired_quotes
                 await cleanup_expired_quotes()
         except asyncio.CancelledError:raise
