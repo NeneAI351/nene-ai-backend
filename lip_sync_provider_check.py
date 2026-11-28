@@ -1,4 +1,4 @@
-"""One six-second provider check using a public-domain fixture, without wallet access."""
+"""One six-second provider check using the MIT-licensed lip-sync-mac demo, without wallet access."""
 import asyncio
 import logging
 import os
@@ -18,12 +18,12 @@ from rate_limits import _redis_client
 LOG = logging.getLogger("nene-ai")
 CHECK = "lip-sync-six-seconds-v1"
 MAX_CREDITS = 144
-FIXTURE = "https://upload.wikimedia.org/wikipedia/commons/6/6f/Anonymous_speaking_faka%27uvea.webm"
+FIXTURE = "https://raw.githubusercontent.com/mmzz164/lip-sync-mac/main/assets/demo.mp4"
 
 
 def split_fixture(data):
     with tempfile.TemporaryDirectory() as folder:
-        source = Path(folder) / "fixture.webm"
+        source = Path(folder) / "fixture.mp4"
         video = Path(folder) / "video.mp4"
         audio = Path(folder) / "audio.wav"
         source.write_bytes(data)
@@ -31,8 +31,8 @@ def split_fixture(data):
         if not ffmpeg:
             raise RuntimeError("ffmpeg_unavailable")
         for offset, options, output in [
-            ("3", ["-an", "-vf", "fps=24", "-c:v", "libx264", "-pix_fmt", "yuv420p"], video),
-            ("3.35", ["-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le"], audio),
+            ("0", ["-an", "-vf", "fps=24", "-c:v", "libx264", "-pix_fmt", "yuv420p"], video),
+            ("0.35", ["-vn", "-ac", "1", "-ar", "24000", "-c:a", "pcm_s16le"], audio),
         ]:
             subprocess.run([ffmpeg, "-nostdin", "-loglevel", "error", "-ss", offset, "-i", str(source),
                             "-t", "6", *options, str(output)], check=True, timeout=35, capture_output=True)
