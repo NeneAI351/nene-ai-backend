@@ -161,6 +161,9 @@ async def _startup_database():
         if os.getenv("NENE_PHOTO_STAGING_SMOKE") and os.getenv("NENE_ENV") == "staging":
             from photo_design_staging_smoke import run_once
             app.state.photo_staging_smoke = asyncio.create_task(run_once())
+        elif os.getenv("NENE_PHOTO_PRODUCTION_SMOKE"):
+            from photo_design_staging_smoke import run_once
+            app.state.photo_staging_smoke = asyncio.create_task(run_once(production=True))
         logger.info("NENE AI PostgreSQL database and wallet schema initialized.")
 
 @app.on_event("shutdown")
