@@ -28,6 +28,7 @@ async def test_outfit_edit_failure_and_concurrent_replay(monkeypatch):
         "INSERT INTO photo_design_quotes(id,user_id,source_key,prompt,credit_cost) VALUES (%s,%s,%s,%s,10)",
         (str(quote), owner, "source", prompt),
     )
+    monkeypatch.setenv("NENE_ENV", "staging")
     monkeypatch.setenv("NENE_PHOTO_DESIGN_STAGING_QUOTES", "true")
     monkeypatch.setenv("NENE_PHOTO_EDIT_CREDITS", "10")
     monkeypatch.setattr(photo, "enforce_rate_limit", AsyncMock())
