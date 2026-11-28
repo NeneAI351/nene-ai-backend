@@ -64,6 +64,7 @@ async def create_reserved_generation(
     image_url: str | None = None,
     source_image_id: str | None = None,
     source_audio_id: str | None = None,
+    source_video_id: str | None = None,
     credit_limit: Decimal | None = None,
     ltx_available: bool = True,
     generate_audio: bool = True,
@@ -93,7 +94,18 @@ async def create_reserved_generation(
     if not prompt or len(prompt) > 12000:
         raise ValueError("Prompt must contain between 1 and 12000 characters.")
     is_tts = generation_type == "text-to-speech"
-    if is_tts:
+    is_lip_sync = generation_type == "lip-sync"
+    if source_video_id and not is_lip_sync:
+        raise ValueError("Source video is only supported in lip-sync.")
+    if is_lip_sync:
+        from lip_sync import MODEL, quote as lip_quote
+        if provider != "magic-hour" or model != MODEL or resolution != "source" or source_image_id or image_url or aspect_ratio or not generate_audio:
+            raise ValueError("Invalid lip-sync settings.")
+        video_asset = _uuid(source_video_id, "source video identifier")
+        audio_asset = _uuid(source_audio_id, "source audio identifier")
+        source_asset = None
+        quote = lip_quote(duration_seconds)
+    elif is_tts:
         if not generate_audio or provider!="magic-hour" or model!="magic-hour-voice" or resolution!="audio" or duration_seconds!=1 or source_audio_id or source_image_id or image_url or aspect_ratio:
             raise ValueError("Invalid speech generation settings.")
         from speech_synthesis import quote as speech_quote
@@ -123,7 +135,7 @@ async def create_reserved_generation(
 
     # These are the exact parameters to be used by the worker. Never quote one
     # resolution/duration and silently submit a different one.
-    if not is_tts:
+    if not (is_tts or is_lip_sync):
         quote = pricing_quote(provider, model, resolution, duration_seconds)
         if provider == 'magic-hour':
             from magic_hour_video import validate
@@ -147,6 +159,8 @@ async def create_reserved_generation(
     }
     if is_tts:
         normalized["tts_voice"] = tts_voice
+    if is_lip_sync:
+        normalized["source_video_id"] = video_asset
     if audio_asset:
         normalized["source_audio_id"] = audio_asset
     if image_url and not source_asset:
@@ -211,18 +225,31 @@ async def create_reserved_generation(
             # request may never reserve more than the reviewed spending limit.
             if provider == 'ltx' and not ltx_available:
                 raise GenerationEngineUnavailable()
-            if provider == 'magic-hour' and not is_tts:
+            if is_lip_sync:
+                from lip_sync import enabled as lip_enabled
+                if not lip_enabled():
+                    raise ValueError("Lip-sync is unavailable.")
+                owned_video = await (await conn.execute("""SELECT request->'duration' AS duration FROM generations
+                    WHERE id=%s AND user_id=%s AND status='succeeded' AND result->>'object_key' IS NOT NULL
+                      AND generation_type IN ('text-to-video','image-to-video','audio-to-video','lip-sync') FOR KEY SHARE""", (video_asset, owner))).fetchone()
+                if not owned_video:
+                    raise LookupError("Source video not found.")
+                if not isinstance(owned_video["duration"], (int, float)) or owned_video["duration"] < duration_seconds:
+                    raise ValueError("Choose a video at least as long as the lip-sync duration.")
+            if provider == 'magic-hour' and not (is_tts or is_lip_sync):
                 from magic_hour_video import enabled
                 if not enabled():raise ValueError('Magic Hour video backup is not enabled yet.')
             if credit_limit is not None and amount > credit_limit:
                 raise GenerationPriceChanged("The price increased. Review the current price before generating; no credits were reserved.")
 
             if audio_asset:
-                owned_audio = await (await conn.execute("""SELECT billable_seconds FROM speech_assets
+                owned_audio = await (await conn.execute("""SELECT billable_seconds, duration_seconds FROM speech_assets
                     WHERE id=%s AND user_id=%s FOR KEY SHARE""",(audio_asset,owner))).fetchone()
                 if not owned_audio:
                     raise LookupError("Speech recording not found.")
-                if owned_audio["billable_seconds"] != duration_seconds:
+                if is_lip_sync and owned_audio["duration_seconds"] < duration_seconds:
+                    raise ValueError("Choose a voice track at least as long as the selected duration.")
+                if not is_lip_sync and owned_audio["billable_seconds"] != duration_seconds:
                     raise ValueError("Review the price for the full recording duration before generating.")
             if source_asset:
                 owned_asset = await (await conn.execute(

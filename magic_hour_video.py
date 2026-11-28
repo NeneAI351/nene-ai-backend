@@ -63,6 +63,9 @@ async def fail(generation,code):
 
 
 async def dispatch(generation):
+    if generation["generation_type"] == "lip-sync":
+        from lip_sync import dispatch as dispatch_lip_sync
+        return await dispatch_lip_sync(generation)
     owner,job,kind=generation['user_id'],generation['id'],generation['generation_type']
     req=request_data(generation);validate(req,kind)
     auth=headers()
@@ -119,8 +122,15 @@ async def reconcile(generation):
     from generation_worker import _download_and_store_video,_load_generation,_settle_terminal
     stored=await _download_and_store_video(downloads[0]['url'],job)
     req=request_data(generation)
-    record=provider_costs.estimate_generation_cost(generation_id=job,provider='magic-hour',model=MODEL,
-        resolution=req['resolution'],duration_seconds=req['duration'],rate_quote=quote('magic-hour',MODEL,req['resolution'],req['duration']))
+    model = MODEL
+    if generation["generation_type"] == "lip-sync":
+        from lip_sync import MODEL as LIP_MODEL, quote as lip_quote
+        model = LIP_MODEL
+        rate = lip_quote(req["duration"])
+    else:
+        rate = quote('magic-hour',MODEL,req['resolution'],req['duration'])
+    record=provider_costs.estimate_generation_cost(generation_id=job,provider='magic-hour',model=model,
+        resolution=req['resolution'],duration_seconds=req['duration'],rate_quote=rate)
     charged=data.get('credits_charged')
     if isinstance(charged,int) and not isinstance(charged,bool) and charged>=0:record['metadata']['provider_credits_charged']=charged
     await provider_costs.record_generation_cost_estimate(record)

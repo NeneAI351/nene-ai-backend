@@ -40,6 +40,7 @@ import story_store
 import speech_assets
 import speech_synthesis
 import subtitle_translation
+import lip_sync
 import account_privacy
 import editor_exports
 import photo_design
@@ -114,6 +115,7 @@ app.include_router(readiness_router)
 app.include_router(speech_assets.router)
 app.include_router(speech_synthesis.router)
 app.include_router(subtitle_translation.router)
+app.include_router(lip_sync.router)
 app.include_router(account_privacy.router)
 app.include_router(editor_exports.router)
 app.include_router(photo_design.router)
@@ -935,7 +937,7 @@ async def list_completed_videos(request: Request):
         """SELECT id::text, generation_type, LEFT(request->>'prompt', 100) AS title
            FROM generations
            WHERE user_id=%s AND status='succeeded'
-             AND generation_type IN ('text-to-video','image-to-video','audio-to-video')
+             AND generation_type IN ('text-to-video','image-to-video','audio-to-video','lip-sync')
            ORDER BY updated_at DESC, id DESC LIMIT 50""",
         (owner,),
     )
